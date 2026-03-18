@@ -5,6 +5,42 @@ This ROM was designed for an NTSC console with an RP2A03G CPU and RP2C02G PPU. S
 
 This ROM currently has 137 tests. These tests print "PASS" or "FAIL" on screen, and in the event of a failure, this ROM also provides an error code. In addition to those tests, this ROM also has 5 tests labeled "DRAW", which don't actually test for anything; rather, they simply print information on screen.
 
+## Individual Test ROMs
+
+This fork also includes a generator for standalone ROMs, with one ROM per test. These are intended to make emulator automation simpler, since a test can be launched directly without navigating the menu first.
+
+Run the generator with:
+
+`python tools/generate_individual_roms.py generate`
+
+The generated ROMs are written to:
+
+`generated_roms/individual`
+
+Each page gets its own directory, named like:
+
+`[page]-[page-title]`
+
+Each ROM inside that directory is named like:
+
+`[test-number]-[test-name].nes`
+
+### Automation Output at $6000
+
+The individual ROMs also expose machine-readable status output starting at `$6000`, which is useful for emulator test runners and CI automation.
+
+- `$6000`: test status
+- `$6001-$6003`: signature bytes `DE B0 61`
+- `$6004+`: zero-terminated ASCII text output
+
+Status values at `$6000`:
+
+- `$80`: test is currently running
+- `$00`: test passed
+- `$01-$7F`: test failed with that result code
+
+Text output at `$6004+` is written as a zero-terminated string and can be read at any time after the signature is present. The current strings used by the standalone ROMs are `Passed` and `Failed X`.
+
 Here's an example of the menu in this ROM shown on an emulator failing a few tests, passing others, and a few tests on screen haven't been run yet. (The cursor is currently next to the "The Decimal Flag" test.)
 
 <img width="256" height="240" alt="Page1" src="https://github.com/user-attachments/assets/335502f4-d5ac-4aed-ac1f-e31ea614d2a3" />
