@@ -12,6 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 ASM_PATH = ROOT / "AccuracyCoin.asm"
 ASSEMBLER_PATH = ROOT / "nesasm.exe"
+INJECTION_TEMPLATE_PATH = Path(__file__).resolve().parent / "individual_rom_injection.asm"
 OUTPUT_DIR = ROOT / "generated_roms" / "individual"
 TEMP_ASM_PATH = ROOT / "_single_test_build.asm"
 TEMP_NES_PATH = ROOT / "_single_test_build.nes"
@@ -125,255 +126,28 @@ def parse_test_entries(source: str) -> list[TestEntry]:
     return entries
 
 
-def build_source_for_test(original_source: str, entry: TestEntry) -> str:
-    boot_replacement = """ReloadMainMenu:
-\tJSR RunIndividualRom
-InfiniteLoop:
-\tJMP InfiniteLoop
-;;;;;;;
+def build_injection_block(entry: TestEntry) -> str:
+    template = INJECTION_TEMPLATE_PATH.read_text(encoding="utf-8")
+    return (
+        template.replace("__PAGE_INDEX__", f"{entry.page_index:02X}")
+        .replace("__TEST_INDEX__", f"{entry.test_index:02X}")
+    )
 
-"""
+
+def build_source_for_test(original_source: str, entry: TestEntry) -> str:
+    injection_block = build_injection_block(entry)
+    reload_match = re.search(r"ReloadMainMenu:.*?^InfiniteLoop:\s*.*?$", injection_block, re.MULTILINE | re.DOTALL)
+    if not reload_match:
+        raise RuntimeError("Could not find ReloadMainMenu block in injection template")
+    boot_replacement = reload_match.group(0) + "\n;;;;;;;\n\n"
     source, count = RELOAD_MAIN_MENU_RE.subn(boot_replacement, original_source, count=1)
     if count != 1:
         raise RuntimeError("Could not replace ReloadMainMenu block in AccuracyCoin.asm")
 
-    nmi_replacement = f"""NMI_Routine:
-\tRTI
-;;;;;;;
-
-RunIndividualRom:
-\tJSR DisableNMI
-\tJSR DisableRendering
-\tLDA #0
-\tSTA <RunningAllTests
-\tSTA <AutomateTestSuite
-\tSTA <HighlightTextPrinted
-\tSTA <DebugMode
-\tSTA <dontSetPointer
-\tSTA <PPUCTRL_COPY
-\tSTA <PPUMASK_COPY
-\tLDA #$80
-\tSTA $6000
-\tLDA #$DE
-\tSTA $6001
-\tLDA #$B0
-\tSTA $6002
-\tLDA #$61
-\tSTA $6003
-\tLDA #0
-\tSTA $6004
-\tJSR ClearPage2
-\tLDA #$02
-\tSTA $4014
-\tJSR SetUpNMIRoutineForMainMenu
-\tJSR WaitForVBlank
-\tJSR TEST_VblankSync_PreTest
-\tJSR DMASync
-\tLDA #$FF
-\tSTA <menuCursorYPos
-\tLDA #${entry.page_index:02X}
-\tSTA <menuTabXPos
-\tJSR SetUpSuitePointer
-\tJSR LoadSuiteMenu
-\tJSR DrawPageNumber
-\tJSR WaitForVBlank
-\tJSR ResetScroll
-\tJSR EnableFullRendering
-\tJSR EnableNMI
-\tJSR ReadController1
-\tJSR MaskDpadConflicts
-\tLDA #${entry.test_index:02X}
-\tSTA <menuCursorYPos
-\tJSR RunTest
-\tJSR DisableNMI
-\tJSR BuildSTStatusString
-\tJSR DrawSTStatusScreen
-\tRTS
-;;;;;;;
-
-BuildSTStatusString:
-\tLDX <menuCursorYPos
-\tTXA
-\tASL A
-\tTAX
-\tLDA <suitePointerList,X
-\tSTA <TestResultPointer
-\tLDA <suitePointerList+1,X
-\tSTA <TestResultPointer+1
-\tLDY #0
-\tLDA [TestResultPointer],Y
-\tSTA <$50
-\tAND #$03
-\tCMP #$01
-\tBEQ BuildSTStatusString_Passed
-BuildSTStatusString_Failed:
-\tLDA <$50
-\tAND #$FC
-\tLSR A
-\tLSR A
-\tTAX
-\tBNE BuildSTStatusString_FailedStatusReady
-\tLDA #$01
-\tSTA $6000
-\tBNE BuildSTStatusString_FailedText
-BuildSTStatusString_FailedStatusReady:
-\tSTA $6000
-BuildSTStatusString_FailedText:
-\tLDA #$46
-\tSTA $6004
-\tLDA #$61
-\tSTA $6005
-\tLDA #$69
-\tSTA $6006
-\tLDA #$6C
-\tSTA $6007
-\tLDA #$65
-\tSTA $6008
-\tLDA #$64
-\tSTA $6009
-\tLDA #$20
-\tSTA $600A
-\tTXA
-\tJSR STCodeToAscii
-\tSTA $600B
-\tLDA #0
-\tSTA $600C
-\tLDA #$46
-\tSTA $500
-\tLDA #$61
-\tSTA $501
-\tLDA #$69
-\tSTA $502
-\tLDA #$6C
-\tSTA $503
-\tLDA #$65
-\tSTA $504
-\tLDA #$64
-\tSTA $505
-\tLDA #$20
-\tSTA $506
-\tTXA
-\tJSR STCodeToAscii
-\tSTA $507
-\tLDA #0
-\tSTA $508
-\tRTS
-BuildSTStatusString_Passed:
-\tLDA #0
-\tSTA $6000
-\tLDA #$50
-\tSTA $6004
-\tLDA #$61
-\tSTA $6005
-\tLDA #$73
-\tSTA $6006
-\tSTA $6007
-\tLDA #$65
-\tSTA $6008
-\tLDA #$64
-\tSTA $6009
-\tLDA #0
-\tSTA $600A
-\tLDA #$50
-\tSTA $500
-\tLDA #$61
-\tSTA $501
-\tLDA #$73
-\tSTA $502
-\tSTA $503
-\tLDA #$65
-\tSTA $504
-\tLDA #$64
-\tSTA $505
-\tLDA #0
-\tSTA $506
-\tRTS
-;;;;;;;
-
-STCodeToAscii:
-\tCMP #$0A
-\tBCC STCodeToAscii_Digit
-\tCLC
-\tADC #$37
-\tRTS
-STCodeToAscii_Digit:
-\tCLC
-\tADC #$30
-\tRTS
-;;;;;;;
-
-DrawSTStatusScreen:
-\tLDA #0
-\tSTA <DebugMode
-\tSTA <PPUCTRL_COPY
-\tSTA <PPUMASK_COPY
-\tSTA $2000
-\tSTA $2001
-\tLDA $2002
-\tJSR DisableRendering
-\tJSR SetUpDefaultPalette
-\tJSR ClearNametable
-\tLDA #$00
-\tSTA <$00
-\tLDA #$05
-\tSTA <$01
-\tLDA #$21
-\tSTA <$03
-\tLDA #$80
-\tSTA <$04
-\tJSR PrintNullTextCtr
-\tLDA $2002
-\tJSR WaitForVBlank
-\tJSR ResetScroll
-\tJSR EnableRendering_BG
-\tRTS
-;;;;;;;
-
-PrintNullTextCtr:
-\tSTA <Copy_A
-\tSTY <Copy_Y
-\tSTX <Copy_X
-\tLDA $2002
-\tLDY #0
-PNTC_GetLen:
-\tLDA [$0000],Y
-\tBEQ PNTC_HaveLen
-\tINY
-\tBNE PNTC_GetLen
-PNTC_HaveLen:
-\tLDA <$04
-\tAND #$E0
-\tORA #$10
-\tSTA <$04
-\tTYA
-\tLSR A
-\tEOR #$FF
-\tCLC
-\tADC #$01
-\tCLC
-\tADC <$04
-\tSTA <$04
-\tLDA <$03
-\tSTA $2006
-\tLDA <$04
-\tSTA $2006
-\tLDY #0
-PNTC_Loop:
-\tLDA [$0000],Y
-\tBEQ PNTC_Done
-\tTAX
-\tLDA AsciiToCHR-32,X
-\tSTA $2007
-\tINY
-\tBNE PNTC_Loop
-PNTC_Done:
-\tLDY <Copy_Y
-\tLDX <Copy_X
-\tLDA <Copy_A
-\tRTS
-;;;;;;;
-
-"""
+    nmi_match = re.search(r"NMI_Routine:.*", injection_block, re.MULTILINE | re.DOTALL)
+    if not nmi_match:
+        raise RuntimeError("Could not find NMI_Routine block in injection template")
+    nmi_replacement = nmi_match.group(0)
     source, count = NMI_ROUTINE_RE.subn(nmi_replacement, source, count=1)
     if count != 1:
         raise RuntimeError("Could not replace NMI_Routine block in AccuracyCoin.asm")
