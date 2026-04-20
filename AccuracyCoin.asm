@@ -3779,6 +3779,8 @@ TEST_PPU_Open_Bus:
 
 	LDA <$50	; This value will be $00 if you are running [PPU Open Bus], but $01 if you are running [Dummy Write Cycles], which re-runs this test to verify the ppu bus works as a prerequisite.
 	BNE TEST_PPU_Open_Bus_SkipDecayTest
+	INC <ErrorCode 
+
 	
 	;;; Test 5 [PPU Open Bus]: The PPU data bus decays. ;;;
 	LDA #$FF
