@@ -15529,6 +15529,8 @@ TEST_Scanline0Sprites_ClearPg2: ; clear page 2 (used for OAM DMA) with all zeroe
 		
 	JSR WaitForVBlank ; Wait for vblank
 	JSR EnableRendering
+	LDA #2
+	STA $4014
 	JSR WaitForVBlank ; Wait for a second vblank, so we can check for sprite zero hits in the previous frame.
 	LDA $2002 ; read PPUSTATUS
 	AND #$40 ; check for sprite zero hit.
