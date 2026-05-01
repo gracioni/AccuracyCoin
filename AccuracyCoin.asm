@@ -3156,20 +3156,44 @@ TEST_StaleSpriteShiftRegs:
 	BNE FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit occured here.
 	INC <ErrorCode
 
-	;;; Test 5 [Stale Sprite Shift Registers]: Can a sprite at X=$FF trigger a sprite zero hit by preventing the shifter from reloading during HBlank? ;;;
-	; Disabling rendering on dot 257 (or 258 depending on clock alignment) will prevent the sprite shifters from being reloaded.
-	; Sprite zero's shifter was never fully shifted, and will stop shifting during HBlank.
-	; So if we re-enable rendering during the ppu idle period, we can shift the rest of sprite zero's shifter on the following scanline to trigger the sprite zero hit.
+	;;; Test 5 [Stale Sprite Shift Registers]: What if we prepare the sprite counter but don't let the counter activate on dot 339? ;;;
 
 	; More info about how the sprite shifters work in case you need it:
 	; The sprites are only drawn after their "shifter counter" reaches zero. (each sprite being drawn has their own shifter counter)
 	; This shifter counter is initialized during sprite fetch when the X position of a sprite is determined. (using the value of the X position.)
 	; The shifter counter has two modes: "halted" and "counting".
-	; - When halted, the sprite is being drawn, and teh sprite shifter is shifting.
+	; - When halted, the sprite is being drawn, and the sprite shifter is shifting.
 	; - when counting, the counter is simply decremented until it reaches zero. Once it reaches zero, it switches to "halted" mode.
 	; - If the ppu is rendering on dot 339, then the shifter counters are set to "counting". 
 	;   - If rendering was not enabled on dot 339, the shifter counters will be in whatever state they were previously in, which is likely "halted".
-	; So when we run this test, it will be set up with $FF.
+	; The plan for this test is to let the counter reload with $FF, but leave the state as "halted" which will draw the sprite immediately as soon as rendering is enabled.
+	
+	; Rendering will be disabled before dot 339, and it will remaing that way through dot 339 (and quite a good bit into the following scanline).
+	; In other words, Dot 339 will be during F-Blank.
+	; This prevents the counters from changing their state from "halted" to "counting". 
+	; Since they will be in the "halted" state as soon as rendering is enabled, the sprite will be draws as soon as rendering is enabled, triggering the sprite zero hit.
+
+	JSR Sync_ToLine0Dot1          ; sync the CPU to dot 1 of scanline 0.
+	JSR ClockslideFromWord        ; stall 446 CPU cycles.
+	.word 446                     ; ^
+	LDA #0                        ; A value of 0 to disable rendering.
+	STA $2001                     ; this instruction begins on scanline 4, dot 248. Accounting for the delay, rendering should be disabled around dot 258 or 259.
+	JSR Clockslide_50             ; stall a while so HBlank can end.
+	LDA #$1E                      ; A value of $1E to enable both sprites and the background, including the 8 pixels on the left edge of the screen.
+	STA $2001                     ; this instruction begins on scanline 4, dot 326. Accounting for the delay, rendering should be enabled around dot 336 or 337.
+	
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
+	BEQ FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit did NOT occur this time.
+	
+	INC <ErrorCode
+
+
+	;;; Test 6 [Stale Sprite Shift Registers]: Can a sprite at X=$FF trigger a sprite zero hit by preventing the shifter from reloading during HBlank? ;;;
+	; Disabling rendering on dot 257 (or 258 depending on clock alignment) will prevent the sprite shifters from being reloaded.
+	; Sprite zero's shifter was never fully shifted, and will stop shifting during HBlank.
+	; So if we re-enable rendering during the ppu idle period, we can shift the rest of sprite zero's shifter on the following scanline to trigger the sprite zero hit.
+
+	; When we run this test, the sprite counter will be set up with $FF.
 	; Then every visible ppu cycle, this counter is decremented until 0 where the sprite is drawn and the sprite shifter will begin shifting.
 	; This results in a single pixel drawn at X=$FF for sprite zero.
 	; Since the sprite shifters do not shift while rendering is disabled (or blanked) they stop shifting during HBlank.
