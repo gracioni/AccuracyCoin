@@ -1478,9 +1478,7 @@ TEST_SuddenlyResizeSprite:
 	
 	; In theory, a sprite zero hit will occur next scanline now.
 	
-	JSR WaitForVBlank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BEQ FAIL_SuddenlyResizeSprite
 	INC <ErrorCode
 	
@@ -1508,9 +1506,7 @@ TEST_SuddenlyResizeSprite:
 	
 	; In theory, a sprite zero hit will NOT occur next scanline now.
 	
-	JSR WaitForVBlank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE FAIL2_SuddenlyResizeSprite
 	INC <ErrorCode
 	
@@ -1538,9 +1534,7 @@ TEST_SuddenlyResizeSprite:
 
 	; In theory, a sprite zero hit will NOT occur next scanline.
 	
-	JSR WaitForVBlank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE FAIL2_SuddenlyResizeSprite
 	
 	;;; Test 5 [Suddenly Resize Sprite]: What if we do the same thing as the previous test, but enable the 16px sprite mode AFTER sprite zero is added to the shift registers? ;;;
@@ -1554,9 +1548,7 @@ TEST_SuddenlyResizeSprite:
 
 	; In theory, a sprite zero hit will NOT occur next scanline.
 	
-	JSR WaitForVBlank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BEQ FAIL2_SuddenlyResizeSprite
 	
 	;; END OF TEST ;;
@@ -2453,9 +2445,7 @@ TEST_BGSerialIn:
 	JSR EnableRendering        ; Enable rendering.
 	JSR WaitForVBlank          ; Wait for vblank. The prep work is now complete.
 	
-	JSR WaitForVBlank          ; Wait for an entire frame to render, so we can read the state of the Sprite Zero Hit Flag.
-	LDA $2002                  ; Read from PPUSTATUS
-	AND #$40                   ; Single out the Sprite Zero Hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE FAIL_BGSerialIn        ; If a sprite zero hit did somehow occur, fail the test.
 	INC <ErrorCode             ; And increment the error code to 2.
 	
@@ -3090,18 +3080,22 @@ TEST_APURegActivation_Res2:
 	RTS
 ;;;;;;;
 
+FAIL_InternalDataBus1:
+	JMP TEST_Fail
+
 TEST_StaleSpriteShiftRegs:
 	
 	;;; Test 1 [Stale Sprite Shift Registers]: Verify sprite zero hits are working. ;;;
 
 	JSR VerifySpriteZeroHits      ; We already have a subroutine to verify sprite zero hits are working properly.
-	BEQ FAIL_StaleSpriteShiftRegs ; If they aren't fail the test.
+	BEQ FAIL_InternalDataBus1 ; If they aren't fail the test.
 	INC <ErrorCode
 
-	;;; Test 2 [Stale Sprite Shift Registers]: Additional check that a sprite at X=$FF doesn't trigger a sprite zero hit. ;;;
+	;;; Test 2 [Stale Sprite Shift Registers]: Disabling rendering does not stop the sprite counters. ;;;
+	; Basically, if a sprite should be drawn at a specific X coordinate, disabling rendering before that dot won't affect it.
 
 	JSR SetUpSpriteZero           ; Prepare sprite zero with the following values:
-	.byte $03, $C5, $03, $FF      ; 1x8 pixel stripe, but it's placed at X=$FF.	
+	.byte $05, $C5, $03, $FE      ; 1x8 pixel stripe, but it's placed at X=$FE.	
 	LDA #2                        ; 
 	STA $4014                     ; OAM DMA with page 2.
 	
@@ -3115,13 +3109,53 @@ TEST_StaleSpriteShiftRegs:
 	
 	JSR ResetScroll_2C00          ; Reset the scroll to nametable address $2C00.
 	
-	JSR WaitForVBlank             ; Rendering is enabled, so sprite zero hits can occur. It's just that this one won't.
-	LDA $2002                     ; It doesn't occur, since a sprite zero hit cannot be detected at X=$FF.
-	AND #$40                      ; Check bit 6
+	JSR Sync_ToLine0Dot1          ; sync the CPU to dot 1 of scanline 0.
+	JSR ClockslideFromWord        ; stall 568 CPU cycles. (stall until scanline 5 dot 0)
+	.word 568                     ; ^
+	LDA #0                        ;
+	STA $2001                     ; Disable rendering around dot 15-ish
+	LDA #$1E                      ;
+	STA $2001                     ; Enable rendering around dot 33-ish
+	                              ; Rendering was disabled for 18 ppu cycles, but the sprite counters were NOT halted during that time.
+	                              ; If they were halted, then the sprite wouldn't be drawn at all, as HBlank would begin before the counters reach zero.
+	                              ; But since they weren't halted, the sprite will still be drawn at X=FE, therefore the sprite zero hit still works.
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
+	BEQ FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit did not occur here.
+	INC <ErrorCode
+
+	;;; Test 3 [Stale Sprite Shift Registers]: Disabling rendering does stop the sprite shifters. ;;;
+	; However, the actual process of using the shift register and drawing the sprite does get paused during Forced Blanking.
+
+	JSR SetUpSpriteZero           ; Prepare sprite zero with the following values:
+	.byte $04, $C5, $03, $30      ; 1x8 pixel stripe, but it's placed at X=$30.	
+	LDA #2                        ; 
+	STA $4014                     ; OAM DMA with page 2.
+
+	JSR Sync_ToLine0Dot1          ; sync the CPU to dot 1 of scanline 0.
+	JSR ClockslideFromWord        ; stall 563 CPU cycles. (stall until scanline 4 dot 325)
+	.word 563                     ; ^
+	LDA #0                        ;
+	STA $2001                     ; Disable rendering around dot 0-ish, while the background shifters are full.
+	JSR ClockslideFromWord        ; stall 1130 CPU cycles. (stall until scanline 14 dot 324)
+	.word 1130                    ; ^
+	LDA #$1E                      ;
+	STA $2001                     ; Enable rendering around scanline 14 dot 340
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
+	BEQ FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit did not occur here.
+	INC <ErrorCode
+
+	;;; Test 4 [Stale Sprite Shift Registers]: Additional check that a sprite at X=$FF doesn't trigger a sprite zero hit. ;;;
+	
+	JSR SetUpSpriteZero           ; Prepare sprite zero with the following values:
+	.byte $03, $C5, $03, $FF      ; 1x8 pixel stripe, but it's placed at X=$FF.	
+	LDA #2                        ; 
+	STA $4014                     ; OAM DMA with page 2.
+	
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
 	BNE FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit occured here.
 	INC <ErrorCode
 
-	;;; Test 3 [Stale Sprite Shift Registers]: Can a sprite at X=$FF trigger a sprite zero hit by preventing the shifter from reloading during HBlank? ;;;
+	;;; Test 5 [Stale Sprite Shift Registers]: Can a sprite at X=$FF trigger a sprite zero hit by preventing the shifter from reloading during HBlank? ;;;
 	; Disabling rendering on dot 257 (or 258 depending on clock alignment) will prevent the sprite shifters from being reloaded.
 	; Sprite zero's shifter was never fully shifted, and will stop shifting during HBlank.
 	; So if we re-enable rendering during the ppu idle period, we can shift the rest of sprite zero's shifter on the following scanline to trigger the sprite zero hit.
@@ -3150,9 +3184,7 @@ TEST_StaleSpriteShiftRegs:
 	LDA #$1E                      ; A value of $1E to enable both sprites and the background, including the 8 pixels on the left edge of the screen.
 	JSR Clockslide_20             ; stall 17 CPU cycles to wait for the end of HBlank.
 	STA $2001                     ; this instruction begins on scanline 4, dot 326. Accounting for the delay, rendering should be enabled around dot 336 or 337.
-	JSR WaitForVBlank             ; Wait for the end of the frame
-	LDA $2002                     ; Check for sprite zero hits.
-	AND #$40                      ; bit 6 is the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
 	BEQ FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit did NOT occur this time.
 
 	;; END OF TEST ;;	
@@ -15531,9 +15563,7 @@ TEST_Scanline0Sprites_ClearPg2: ; clear page 2 (used for OAM DMA) with all zeroe
 	JSR EnableRendering
 	LDA #2
 	STA $4014
-	JSR WaitForVBlank ; Wait for a second vblank, so we can check for sprite zero hits in the previous frame.
-	LDA $2002 ; read PPUSTATUS
-	AND #$40 ; check for sprite zero hit.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE FAIL_Scanline0Sprites1 ; If the sprite zero hit *DID* occur, the test has failed, since a Y coordinate of 0 should draw the sprite on scanline 1.
 	INC <ErrorCode
 	
@@ -17989,6 +18019,13 @@ VblSync_Plus_A_End: ; Moved here for space. This is the end of the VblSync_Plus_
 	RTS
 ;;;;;;;
 
+WaitForVBLSpriteZeroHit:
+	JSR WaitForVBlank          ; Wait for vblank
+	LDA $2002                  ; Read PPUSTATUS
+	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	RTS                        ; RTS, and run a BEQ or BNE afterwards.
+;;;;;;;
+
 VerifySpriteZeroHits:
 	                           ; STEP ONE: Intentionally miss a sprite zero hit.
 	JSR DisableRendering       ; Disable rendering so the following can happen even out of vblank.
@@ -18005,18 +18042,14 @@ VerifySpriteZeroHits:
 	STA $4014                  ; Trigger the OAM DMA
 	JSR WaitForVBlank          ; Wait for vblank
 	JSR EnableRendering        ; Draw both the background and sprites.	
-	JSR WaitForVBlank          ; Wait for vblank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE VerifySpriteZeroHits_F ; Fail the test if the sprite zero hit occured.
 	INC $200                   ; Move this sprite to scanline 5.
 	LDA #2                     ; Page 2 for the OAM DMA
 	STA $4014                  ; Trigger the OAM DMA
 	JSR WaitForVBlank          ; Wait for vblank
 	JSR EnableRendering        ; Draw both the background and sprites.	
-	JSR WaitForVBlank          ; Wait for vblank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit 
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	RTS                        ; and return.
 ;;;;;;;
 VerifySpriteZeroHits_F:

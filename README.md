@@ -633,8 +633,10 @@ or
 
 ### Stale Sprite Shift Registers
   1: Sprite Zero Hits should be working.  
-  2: Sprite Zero hits shouldn't occur at X=$FF.  
-  3: The sprite shift registers should not be clocked during H-Blank or F-Blank. F-Blank should prevent the shift registers from being reloaded. The sprite shifter counter shouldn't be reloaded during F-blank on dot 339, allowing the sprite to be drawn as soon as rendering is re-enabled.  
+  2: Sprite counters should continue clocking during F-Blank.  
+  3: The sprite shift registers should not be clocked during F-Blank or H-Blank.  
+  4: Sprite Zero hits shouldn't occur at X=$FF.  
+  5: F-Blank should prevent the shift registers and counters from being reloaded during H-Blank, allowing the sprite to be drawn as soon as rendering is re-enabled.  
 
 ### BG Serial In
   1: Sprite zero hits should not occur when the nametable is entirely blank.  
