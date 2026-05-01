@@ -1512,7 +1512,7 @@ TEST_SuddenlyResizeSprite:
 	
 	;;; Test 4 [Suddenly Resize Sprite]: What about going from a 16px tall sprite that was detected on this scanline, and setting PPUCTRL to use 8px tall sprites? ;;;
 	
-	JSR PrintCHR               ; Clear the neamtable byte set up by the previous error code.
+	JSR PrintCHR               ; Clear the nametable byte set up by the previous error code.
 	.word $2C10                ; ^
 	.byte $24, $FF             ; ^
 	
@@ -1536,17 +1536,18 @@ TEST_SuddenlyResizeSprite:
 	
 	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE FAIL2_SuddenlyResizeSprite
-	
-	;;; Test 5 [Suddenly Resize Sprite]: What if we do the same thing as the previous test, but enable the 16px sprite mode AFTER sprite zero is added to the shift registers? ;;;
+	INC <ErrorCode
+
+	;;; Test 5 [Suddenly Resize Sprite]: What if we do the same thing as the previous test, but disable the 16px sprite mode AFTER sprite zero is added to the shift registers? ;;;
 	LDA #$23
 	STA $2000
 	JSR Sync_ToLine0Dot1 ; 1791 cycles to go
 	JSR ClockslideFromWord
-	.word 1790           ; 1 cycle to go
-	LDA #3               ; -1 cycles to go
-	STA $2000            ; -5 cycles to go
+	.word 1791           ; 0 cycles to go
+	LDA #3               ; -2 cycles to go
+	STA $2000            ; -6 cycles to go
 
-	; In theory, a sprite zero hit will NOT occur next scanline.
+	; In theory, a sprite zero hit will occur next scanline.
 	
 	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BEQ FAIL2_SuddenlyResizeSprite
@@ -3884,41 +3885,51 @@ TEST_PPU_Open_Bus:
 	INC <ErrorCode 
 	
 	;;; Test 3 [PPU Open Bus]: Address $2002, bits 0 through 4 are open bus ;;;
-	LDA $2002
-	LDA #$15
-	STA $2006
-	LDA $2002
-	AND #$1F
-	CMP #$15
-	BNE TEST_FailPPUOpenBus2
+	LDA $2002                ; reset the ppu's w latch. (not entirely needed, but good practice to do this before a write to $2006)
+	LDA #$15                 ; A = $15
+	STA $2006                ; The ppu data bus is now $15 (%0001 1001)
+	LDA $2002                ; reading from $2002 only affects the upper 3 bits of the ppu data bus, so you will see the previous contents of bits 0 through 4. (%xxx1 1001)
+	AND #$1F                 ; Mask away the upper 3 bits. (%0001 1001)
+	CMP #$15                 ; Since reading from $2002 gives you the ppu's open bus data for bits 0 through 4, we should see that A = $15.
+	BNE TEST_FailPPUOpenBus2 ; Otherwise, fail the test.
 	INC <ErrorCode 
 	JSR ResetScroll
 	
 	;;; Test 4 [PPU Open Bus]: The upper 3 bits of the PPU data bus is updated by reads of $2002. ;;;
-	JSR WaitForVBlank ; this clears the vblank flag.
-	LDA #$FF
-	STA $2002
-	LDA $2002
-	LDA $2000
-	CMP #$1F
-	BNE TEST_FailPPUOpenBus2
+	JSR WaitForVBlank        ; this clears the vblank flag.
+	LDA #$FF                 ; A = $FF
+	STA $2002                ; The ppu data bus = $FF
+	LDA $2002                ; Reading $2002 only updates the upper 3 bits of the ppu open bus. (the upper 3 bits are all zero in this instance)
+	LDA $2000                ; Read a write-only register to get the ppu open bus value. (%0001 1111)
+	CMP #$1F                 ; Check if A = $1F.
+	BNE TEST_FailPPUOpenBus2 ; Otherwise, fail the test.
 
 	LDA <$50	; This value will be $00 if you are running [PPU Open Bus], but $01 if you are running [Dummy Write Cycles], which re-runs this test to verify the ppu bus works as a prerequisite.
+	            ; We don't need to check if the ppu open bus decays for that test, so we can skip that.
 	BNE TEST_PPU_Open_Bus_SkipDecayTest
 	INC <ErrorCode 
 
 	
 	;;; Test 5 [PPU Open Bus]: The PPU data bus decays. ;;;
+	; Since having bits decay is analogue behavior, you're probably going to need to "fake" this.
+	; To make a long story short, if nothing updates the PPU Data bus, then the bits *eventually* decay to 0's.
+	; Emphasis on *eventually* because that's the inconsistent part on real hardware.
+	; There's no "logic" determining how long the bits should persist before decaying on real hardware, and this test is known to fail on hardware briefly after powering on the console.
+	; - The bits tend to decay faster the warmer the PPU is, though I'm not checking for that here.
+	; There's multiple ways to emulate this behavior, but I recommend making your implementation deterministic, rather than throwing random numbers around. (or at least make the RNG seeded?)
+	;
+	; I think the simplest approach is to give each bit of the ppu data bus an integer that ticks down every ppu cycle.
+	; Then whenever any bits of the ppu data bus are updated, you initialize the integer for that bit with *some constant* (or add randomness if you prefer.)
+	; - since this is analogue behavior, there is no "canoncial" value for what you should initialize the integer with, though I recommend it takes somewhere between 5 and 30 frames to hit 0.
 	LDA #$FF
-	STA $2002
-	LDX #120
-TEST_PPU_Open_Bus_120FrameStall:; wait approximately two seconds.
-	JSR Clockslide_29780	
-	DEX
-	BNE TEST_PPU_Open_Bus_120FrameStall
-	LDA $2000
-	BNE TEST_FailPPUOpenBus2
-	INC <ErrorCode 
+	STA $2002                           ; Load the ppu data bus with $FF. (all bits set.)
+	LDX #120                            ; X = 120
+TEST_PPU_Open_Bus_120FrameStall:        ; wait approximately two seconds.
+	JSR Clockslide_29780	            ; stall for approximately 1 frame.
+	DEX                                 ; Decrement X
+	BNE TEST_PPU_Open_Bus_120FrameStall ; Loop until X = 0;
+	LDA $2000                           ; Read a write-only register to get the ppu open bus value. It should be all zeroes, as there was more than enough time for all the bits to decay.
+	BNE TEST_FailPPUOpenBus2            ; If any bits are still set, fail the test.
 
 	;; END OF TEST ;;
 TEST_PPU_Open_Bus_SkipDecayTest:
