@@ -1924,6 +1924,14 @@ Stress2004_RevE_SkipMSG:
 ;;;;;;;
 
 TEST_2004_Stress:
+
+	;;; Test 1 [$2004 Stress Test]: Pre test to make sure the emulator won't crash  ;;;
+
+	LDA <result_VblankSync_PreTest
+	BNE FAIL_2004_Stress
+	INC <ErrorCode
+
+
 	; Verify revision G PPU behavior
 	LDX #1
 	LDA #5
@@ -1950,7 +1958,7 @@ TEST_2004_Stress_Prep:
 	INX
 	BNE TEST_2004_Stress_Prep
 
-	;;; Test 1 [$2004 Stress Test]: Reads from $2004 return the OAM Buffer. Let's verify the OAM Buffer is correct on every ppu cycle of a scanline ;;;
+	;;; Test 2 [$2004 Stress Test]: Reads from $2004 return the OAM Buffer. Let's verify the OAM Buffer is correct on every ppu cycle of a scanline ;;;
 	; OAM is set up with the following pattern: $FF to $00 descending.
 	; This will result in less than 8 objects on the taget scanline, so the OAM address will overflow.
 
@@ -1960,7 +1968,7 @@ TEST_2004_Stress_Prep:
 	BEQ FAIL_2004_Stress 
 	
 	INC <ErrorCode
-	;;; Test 2 [$2004 Stress Test]: Reads from $2004 return the OAM Buffer. Let's verify the OAM Buffer is correct on every ppu cycle of a scanline ;;;
+	;;; Test 3 [$2004 Stress Test]: Reads from $2004 return the OAM Buffer. Let's verify the OAM Buffer is correct on every ppu cycle of a scanline ;;;
 	; OAM is set up with the following pattern: 8 objects in range, then $00 to $BF ascending.
 	; Since there will be 8 objects on the target scanline, we will see the glitchy OAM ADDR increment behavior.
 	
@@ -2513,6 +2521,15 @@ FAIL_BGSerialIn2:
 ;;;;;;;;;;;;;;;;;
 
 TEST_2007_Stress:
+
+	;;; Test 1 [$2007 Stress Test]: Pre test to make sure the emulator won't crash  ;;;
+
+	LDA <result_VblankSync_PreTest
+	BNE FAIL_BGSerialIn2 ; jus tre-use this fail case.
+	INC <ErrorCode
+
+	; With that taken care of, let's run some preparations
+
 	; clear nametable 2.
 	JSR DisableRendering
 	JSR ClearNametable2
@@ -2536,9 +2553,7 @@ TEST_2007StressTest_Loop1:
 	STX $2001
 	; 2 cpu cycles have passed.
 	JSR ClockslideFromWord ; 
-	.word 28000-5
-	JSR ClockslideFromWord ; 
-	.word 29780
+	.word 29780+28000-5
 	JSR ClockslideFromWord ; 
 	.word 29781-540
 	
@@ -2602,7 +2617,7 @@ TEST_2007StressTest_Loop3:
 	JMP TEST_2007StressTest_Loop3 
 TEST_2007StressTest_Exit:
 
-	;;; Test 1 [$2007 Stress Test]: What data goes into the PPU Read Buffer if we read from $2007 in the middle of a visible scanline? ;;;
+	;;; Test 2 [$2007 Stress Test]: What data goes into the PPU Read Buffer if we read from $2007 in the middle of a visible scanline? ;;;
 
 	; Okay, let's talk about this test.
 	
@@ -12144,7 +12159,7 @@ TEST_ImpliedDummyRead_Continue2:
 	; PLA [Pull off A6] [also dummy read.] (4 cycles)
 	; LDX <$A6 [Read opcode] [Read operand] [read address $A6, Data bus = $A5.] (3)
 	; LDA <$A5 [Read opcode] [Read operand] [read address $A5, Data bus = the opcode of the instruction we want to test.] (3)
-	; PHA [Read Opcode] [Dummy Read $4015 (This should clear the Frame Counter interrupt.)] [Push A ($48) to stack]
+	; PHP [Read Opcode] [Dummy Read $4015 (This should clear the Frame Counter interrupt.)] [Push Processor ($3C) to stack]
 	; [Read opcode from $4015. Hopefully, a JSR.]
 	;
 	; and hopefully the BRK takes you to TEST_ImpliedDummyRead_BRKed3, which sets $60 and jumps to TEST_ImpliedDummyRead_PostPHP.
@@ -17657,7 +17672,7 @@ RunTest_AllTestSkipNMI:
 	LDA <suitePointerList+1,X     ; read the high byte of where to store the test results.
 	STA <TestResultPointer+1      ; and store it in RAM next to the low byte.
 	
-	LDA <TestResultPointer+1        ; draw tests cannot be marked to be skipped,
+	LDA <TestResultPointer+1      ; draw tests cannot be marked to be skipped,
 	CMP #3                        ; but address $3FF is uninitialized, and might be $FF. 
 	BEQ RunTest_SkipSkip          ; So we make sure we never skip Draw tests.
 	

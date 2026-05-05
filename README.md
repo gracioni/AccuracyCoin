@@ -651,11 +651,13 @@ or
   4: (Composite PPU Only) Consecutive frames should shift the background on scanline 0, causing the sprite zero hit to miss on every other frame. (Tested at X=$00)  
 
 ### $2004 Stress Test  
-  1: Reading from $2004 (with rendering enabled) should read from the "OAM Buffer" used during OAM Evaluation. Your results did not match the expected results of the test where OAMADDR overflows. See TEST_2004_Stress_Evaluate in the .asm code for details.  
-  2: Reading from $2004 (with rendering enabled) should read from the "OAM Buffer" used during OAM Evaluation. Your results did not match the expected results of the test with more than 8 in-range objects. See TEST_2004_Stress_Evaluate in the .asm code for details.  
+  1: This emulator failed to sync the CPU to VBlank during a test that ran when the ROM boots.  
+  2: Reading from $2004 (with rendering enabled) should read from the "OAM Buffer" used during OAM Evaluation. Your results did not match the expected results of the test where OAMADDR overflows. See TEST_2004_Stress_Evaluate in the .asm code for details.  
+  3: Reading from $2004 (with rendering enabled) should read from the "OAM Buffer" used during OAM Evaluation. Your results did not match the expected results of the test with more than 8 in-range objects. See TEST_2004_Stress_Evaluate in the .asm code for details.  
 
 ### $2007 Stress Test  
-  1: Reading from $2007 should set up the PPU Read Buffer two ppu cycles after the CPU Read ends. Reading from $2007 (with rendering enabled) should set up the PPU Read Buffer with the same value as the resulting read from the background or sprite fetch that occured on the same ppu cycle as the read for the PPU Read Buffer. If you fail this test, you are likely reading from memory to set up the PPU Read Buffer on the wrong ppu cycle, missing dummy nametable reads during sprite fetch, or missing dummy nametable reads at the end of a scanline.  
+  1: This emulator failed to sync the CPU to VBlank during a test that ran when the ROM boots.  
+  2: Reading from $2007 should set up the PPU Read Buffer two ppu cycles after the CPU Read ends. Reading from $2007 (with rendering enabled) should set up the PPU Read Buffer with the same value as the resulting read from the background or sprite fetch that occured on the same ppu cycle as the read for the PPU Read Buffer. If you fail this test, you are likely reading from memory to set up the PPU Read Buffer on the wrong ppu cycle, missing dummy nametable reads during sprite fetch, or missing dummy nametable reads at the end of a scanline.  
 
 ## Page 20: CPU Behavior 2
 
