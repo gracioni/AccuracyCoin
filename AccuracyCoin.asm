@@ -2129,12 +2129,12 @@ TEST_2004_Stress_Evaluate:
 	LDA $500, Y                         ; The results might be off-by-one due to clock alignment alignment.
 	CMP #$FF                            ; Let's see if it is.
 	BNE TEST_2004_Stress_Eval_DontShift ; If not, skip ahead.
-	JSR Test_2004_Stress_ShiftBy1       ; Shift the entire table of results over to the right a single byte. Increment $60 to indicate we did this.
+	JSR Test_2004_Stress_ShiftBy1       ; Shift the entire table of results over to the right a single byte. Increment address $6F to indicate we did this.
 	LDA #$40
 	STA <$00
 	BIT <$00                            ; Set the overflow flag to indicate we had to shift everything over.
 TEST_2004_Stress_Eval_DontShift:
-	LDA [$0060], Y  ; Load the first byte of the answer key.
+	LDA [$0060], Y                      ; Load the first byte of the answer key.
 	STA <$50                            ; use address $50 as a copy of the previously read value.
 	
 TEST_2004_Stress_Eval1_Loop1:            ; Check the first 256 bytes of the results.
@@ -2144,19 +2144,19 @@ TEST_2004_Stress_Eval1_Loop1:            ; Check the first 256 bytes of the resu
 	CMP <$50                             ; Compare with the value from the previous iteration.
 	BEQ TEST_2004_S_Eval1_NoBitFlips     ; If it's the same as last time, then there cannot be bit flips.
 	                                     ; There can be bit flips here, but the bits are only ever flipping from 1 to 0.
-	LDA [$0060], Y   ; Load the expected result.
+	LDA [$0060], Y                       ; Load the expected result.
 	EOR #$FF                             ; Flip all the bits.
 	AND $500, Y                          ; bitwise AND with the value read.
     BNE TEST_2004_Stress_Eval1_Fail      ; Bitflips can ONLY result in bits going from 1 to 0, so if we have anything in the result here, then you are wrong.
 	BEQ TEST_2004_Stress_Eval1_Continue  ; Skip ahead
                                          ;
 TEST_2004_S_Eval1_NoBitFlips:            ; If we know there aren't bit flips in the data, then just compare with the asnwer key.
-	CMP [$0060], Y   ;
+	CMP [$0060], Y                       ;
 	BNE TEST_2004_Stress_Eval1_Fail      ;
 TEST_2004_Stress_Eval1_Continue:         ;
-	LDA [$0060], Y   ; Load the expected result.
+	LDA [$0060], Y                       ; Load the expected result.
 	STA <$50                             ; Update the byte that stores the previously read value.
-	INX                                  ;
+	INY                                  ;
 	BNE TEST_2004_Stress_Eval1_Loop1     ;
 	
 	INC <$61 ; Increment the high byte of the pointer.
@@ -2168,20 +2168,20 @@ TEST_2004_Stress_Eval1_Loop2:                ; Check the next 85 bytes of the re
 	CMP <$50                                 ; Compare with the value from the previous iteration.
 	BEQ TEST_2004_S_Eval1_2NoBitFlips        ; If it's the same as last time, then there cannot be bit flips.
 	                                         ; There can be bit flips here, but the bits are only ever flipping from 1 to 0.
-	LDA [$0060], Y   ; Load the expected result.
+	LDA [$0060], Y                           ; Load the expected result.
 	EOR #$FF                                 ; Flip all the bits.
 	AND $600, Y                              ; bitwise AND with the value read.
     BNE TEST_2004_Stress_Eval1_Fail          ; Bitflips can ONLY result in bits going from 1 to 0, so if we have anything in the result here, then you are wrong.
 	BEQ TEST_2004_Stress_Eval1_2Continue     ; Skip ahead
                                              ;
-TEST_2004_S_Eval1_2NoBitFlips:           ; If we know there aren't bit flips in the data, then just compare with the asnwer key.
-	CMP [$0060], Y   ;
+TEST_2004_S_Eval1_2NoBitFlips:               ; If we know there aren't bit flips in the data, then just compare with the asnwer key.
+	CMP [$0060], Y                           ;
 	BNE TEST_2004_Stress_Eval1_Fail          ;
 TEST_2004_Stress_Eval1_2Continue:            ;
-	LDA [$0060], Y   ; Load the expected result.
+	LDA [$0060], Y                           ; Load the expected result.
 	STA <$50                                 ; Update the byte that stores the previously read value.
-	INX                                      ;
-	CPX #85                                  ; Check until address $341
+	INY                                      ;
+	CPY #85                                  ; Check until address $341
 	BNE TEST_2004_Stress_Eval1_Loop2         ;
 	
 	LDA #1
