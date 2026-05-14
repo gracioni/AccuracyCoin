@@ -612,7 +612,7 @@ Suite_UnofficialOps__AX:
 	table "$AF   LAX absolute",   $FF, result_UnOp_LAX_AF, TEST_LAX_AF
 	table "$B3   LAX indirect,Y", $FF, result_UnOp_LAX_B3, TEST_LAX_B3
 	table "$B7   LAX zeropage,Y", $FF, result_UnOp_LAX_B7, TEST_LAX_B7
-	table "$BF   LAX absolute,X", $FF, result_UnOp_LAX_BF, TEST_LAX_BF
+	table "$BF   LAX absolute,Y", $FF, result_UnOp_LAX_BF, TEST_LAX_BF
 	.byte $FF
 	
 	;; Unofficial Instructions: DCP ;;
@@ -11337,6 +11337,15 @@ TEST_VblSyncPreTest_BadEnding:
 ;;;;;;;
 
 TEST_DMABusConflict:
+	
+	; NOTE:
+	; The bus conflict with the DMC DMA has two halves.
+	; - The value the CPU reads.
+	; - The value that the DMC DMA reloads the shift counter with.
+	; These values are different, and this test can only check for the value the CPU sees.
+	; In fact, the only way I would be able to check for the value going into the APU shift register would be with the CPU Revision G pin 30 "CPU Test Mode" stuff.
+	; - Since this requires modified hardware, I'm not making a test for that in this ROM. Perhaps a future ROM though...
+
 	; A very similar test to [APU Register Activation]. In fact, I highly suggest you pass that test before looking into this one, as it's slightly more complicated.
 	; As a recap, when the 6502 address bus is in the range $4000 to $401F, the APU registers are active (including mirrors of them.)
 	; Except the registers aren't just active from $4000 to $40FF. They are active everywhere. Every $20 bytes across the entire address space will be mirrors of the APU registers.
