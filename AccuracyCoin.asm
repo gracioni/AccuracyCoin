@@ -8293,8 +8293,7 @@ TEST_APURegActivation_E0Key:
 
 TEST_APURegActivation_Continue:
 	;;; Test 7 [APU Register Activation]: If the APU registers are active, there will be bus conflicts if the OAM DMA is reading from outside of open bus. ;;;
-	; The setup here is incredibly similar, except the OAM DMA will occur on page 2 instead, after clearing page 2 to all FFs.
-	; Also we're going to write a value of $00 to $2FF to populate the data bus with $00 before the OAM ends.
+	; The setup here is incredibly similar, except the OAM DMA will occur on page 2 instead, after clearing page 2 to be 50% FFs and 50% 00s.
 	;
 	; Here's how OAM should end up after this test:
 	;
@@ -8320,10 +8319,10 @@ TEST_APURegActivation_Continue:
 	;
 	; Most amusingly, it looks like $4015 is read, but $4016 and $4017 aren't visible in this chart. (But don't let that fool you, as the controllers are still getting clocked... on some consoles.)
 	
-	JSR ClearPage2
+	JSR ClearPage2 ; This sets address $200 through $2FF to the value #$FF.
 	LDX #$80
 	LDA #0
-TEST_APURegActivation_Prep6Loop:
+TEST_APURegActivation_Prep6Loop: ; And this loop makes address $280 through $2FF the value #$00
 	STA $200, X
 	INX 
 	BNE TEST_APURegActivation_Prep6Loop
