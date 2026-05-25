@@ -5,9 +5,9 @@ This ROM was designed for an NTSC console with an RP2A03G CPU and RP2C02G PPU. S
 
 This ROM currently has 139 tests. These tests print "PASS" or "FAIL" on screen, and in the event of a failure, this ROM also provides an error code. In addition to those tests, this ROM also has 5 tests labeled "DRAW", which don't actually test for anything; rather, they simply print information on screen.
 
-Here's an example of the menu in this ROM shown on an emulator failing a few tests, passing others, and a few tests on screen haven't been run yet. (The cursor is currently next to the "The Decimal Flag" test.)
+Here's an example of the menu in this ROM shown on an emulator failing a test, passing others, a few tests on screen haven't been run yet, and a test marked to be skipped. (The cursor is currently next to the "Dummy Read Cycles" test.)
 
-<img width="256" height="240" alt="Page1" src="https://github.com/user-attachments/assets/335502f4-d5ac-4aed-ac1f-e31ea614d2a3" />
+<img width="512" height="480" alt="AccuracyCoin_Example" src="https://github.com/user-attachments/assets/f0f82ee6-a73d-4b89-9532-5b5d4e0e9d14" />
 
 # Navigating the menus
 Use the D-Pad to move the cursor up or down.  
@@ -20,7 +20,7 @@ If the cursor is at the top of the page (highlighting the current page index), p
 
 Examples:
 
-<img width="563" height="240" alt="TableComp" src="https://github.com/user-attachments/assets/33b6b6d0-0509-4791-a3de-041ab681a43f" />
+<img width="546" height="240" alt="AccuracyCoin_ResultScreen" src="https://github.com/user-attachments/assets/6f725c67-7c05-4de6-8dc2-4a4d09e49c7b" />
 
 Any test with multiple acceptable passing behaviors will be drawn with a light blue number over it.
 
@@ -28,7 +28,7 @@ Any test with multiple acceptable passing behaviors will be drawn with a light b
 
 After running a test, you can press "Select" to reveal this menu:
 
-![DebugMenu_0](https://github.com/user-attachments/assets/7b79c862-1eca-47f4-863d-dc2b89869188)
+<img width="512" height="480" alt="AccuracyCoin_DebugScreen" src="https://github.com/user-attachments/assets/ffc657d7-def4-44f1-a962-2815c9968c96" />
 
 This menu will print several bytes on screen and can be useful for debugging certain tests in a situation where you don't have a way to view everything in RAM. I suggest simply using some form of memory viewer if possible.
 
@@ -40,7 +40,7 @@ The remaining 8 rows will print every byte from address $500 to $5FF, which is t
 
 Here's a color-coded version of that image, with boxes around each byte:
 
-![DebugMenu_1](https://github.com/user-attachments/assets/6e6423b3-9f6e-4ccb-88a9-a187a840cdbd)
+<img width="512" height="480" alt="AccuracyCoin_DebugScreen_Labeled" src="https://github.com/user-attachments/assets/8758b318-b413-4bd9-9b2c-f37ec18b75a0" />
 
 # Error Codes
 For more information, I recommend reading the fully commented assembly code for the test.
