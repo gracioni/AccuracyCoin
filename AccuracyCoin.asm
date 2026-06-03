@@ -311,6 +311,10 @@ result_BranchDummyRead = $48B
 result_2004_Stress = $48C
 result_2002FlagClearTiming = $48D
 result_2007_Stress = $48E
+result_StaleSpriteShiftRegs = $48F
+
+result_InternalDataBus = $490
+
 
 result_DrawTest = $03FF	; page 3 omits the test from the all-test-result-table.
 
@@ -608,7 +612,7 @@ Suite_UnofficialOps__AX:
 	table "$AF   LAX absolute",   $FF, result_UnOp_LAX_AF, TEST_LAX_AF
 	table "$B3   LAX indirect,Y", $FF, result_UnOp_LAX_B3, TEST_LAX_B3
 	table "$B7   LAX zeropage,Y", $FF, result_UnOp_LAX_B7, TEST_LAX_B7
-	table "$BF   LAX absolute,X", $FF, result_UnOp_LAX_BF, TEST_LAX_BF
+	table "$BF   LAX absolute,Y", $FF, result_UnOp_LAX_BF, TEST_LAX_BF
 	.byte $FF
 	
 	;; Unofficial Instructions: DCP ;;
@@ -750,6 +754,7 @@ Suite_PPUMisc:
 	table "Attributes As Tiles",      $FF, result_AttributesAsTiles,     TEST_AttributesAsTiles
 	table "t Register Quirks",        $FF, result_tRegisterQuirks,       TEST_tRegisterQuirks
 	table "Stale BG Shift Registers", $FF, result_StaleBGShiftRegisters, TEST_StaleBGShiftRegisters
+	table "Stale Sprite Shift Regs",  $FF, result_StaleSpriteShiftRegs,  TEST_StaleSpriteShiftRegs
 	table "BG Serial In",             $FF, result_BGSerialIn,            TEST_BGSerialIn
 	table "Sprites On Scanline 0",    $FF, result_Scanline0Sprites,      TEST_Scanline0Sprites
 	table "$2004 Stress Test",        $FF, result_2004_Stress,           TEST_2004_Stress
@@ -765,6 +770,8 @@ Suite_CPUBehavior2:
 	table "Implied Dummy Reads",	 $FF, result_ImpliedDummyRead,  TEST_ImpliedDummyRead
 	table "Branch Dummy Reads", 	 $FF, result_BranchDummyRead,   TEST_BranchDummyRead
 	table "JSR Edge Cases",          $FF, result_JSREdgeCases,      TEST_JSREdgeCases
+	table "Internal Data Bus",       $FF, result_InternalDataBus,   TEST_InternalDataBus
+
 	.byte $FF
 
 
@@ -1471,9 +1478,7 @@ TEST_SuddenlyResizeSprite:
 	
 	; In theory, a sprite zero hit will occur next scanline now.
 	
-	JSR WaitForVBlank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BEQ FAIL_SuddenlyResizeSprite
 	INC <ErrorCode
 	
@@ -1501,15 +1506,13 @@ TEST_SuddenlyResizeSprite:
 	
 	; In theory, a sprite zero hit will NOT occur next scanline now.
 	
-	JSR WaitForVBlank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE FAIL2_SuddenlyResizeSprite
 	INC <ErrorCode
 	
 	;;; Test 4 [Suddenly Resize Sprite]: What about going from a 16px tall sprite that was detected on this scanline, and setting PPUCTRL to use 8px tall sprites? ;;;
 	
-	JSR PrintCHR               ; Clear the neamtable byte set up by the previous error code.
+	JSR PrintCHR               ; Clear the nametable byte set up by the previous error code.
 	.word $2C10                ; ^
 	.byte $24, $FF             ; ^
 	
@@ -1531,25 +1534,22 @@ TEST_SuddenlyResizeSprite:
 
 	; In theory, a sprite zero hit will NOT occur next scanline.
 	
-	JSR WaitForVBlank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE FAIL2_SuddenlyResizeSprite
-	
-	;;; Test 5 [Suddenly Resize Sprite]: What if we do the same thing as the previous test, but enable the 16px sprite mode AFTER sprite zero is added to the shift registers? ;;;
+	INC <ErrorCode
+
+	;;; Test 5 [Suddenly Resize Sprite]: What if we do the same thing as the previous test, but disable the 16px sprite mode AFTER sprite zero is added to the shift registers? ;;;
 	LDA #$23
 	STA $2000
 	JSR Sync_ToLine0Dot1 ; 1791 cycles to go
 	JSR ClockslideFromWord
-	.word 1790           ; 1 cycle to go
-	LDA #3               ; -1 cycles to go
-	STA $2000            ; -5 cycles to go
+	.word 1791           ; 0 cycles to go
+	LDA #3               ; -2 cycles to go
+	STA $2000            ; -6 cycles to go
 
-	; In theory, a sprite zero hit will NOT occur next scanline.
+	; In theory, a sprite zero hit will occur next scanline.
 	
-	JSR WaitForVBlank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BEQ FAIL2_SuddenlyResizeSprite
 	
 	;; END OF TEST ;;
@@ -1626,7 +1626,7 @@ TEST_BranchDummyRead:
 	LDA #$5A
 	JSR SetPPUReadBufferToA
 	LDA $2007
-	TXA ; just make sure A isn't the correct answer before we read from $2000. I can imagine an incredibly wrong implementation of open bus simply not chaning A, and somehow making it this far.
+	TXA ; just make sure A isn't the correct answer before we read from $2000. I can imagine an incredibly wrong implementation of open bus simply not changing A, and somehow making it this far.
 	LDA $2000
 	CMP #$5A
 	BNE FAIL_BranchDummyRead ; If the value read doesn't match the expected value, abort!
@@ -1635,9 +1635,12 @@ TEST_BranchDummyRead:
 	;;; Test 3 [Branch Dummy Reads]: (prerequisite) verify address $2004 behavior. ;;;
 	; Pre revision G PPUs behave differently, so we want this to work on either case.
 	; Let's just make sure we read either OAMDATA or PPU Open bus.
-	JSR ClearPage2
 	LDA #$60
 	STA $200
+	
+	JSR WaitForVBlank
+	JSR Clockslide_29780 ; Set the vblank flag. (This will hopefully persist until we JSR to $2000 in the next test.
+	
 	LDA #2
 	STA $4014 ; OAM DMA
 	STA $2002	
@@ -1673,16 +1676,15 @@ BranchDummyRead_RevE:
 	STA $1FA4
 	LDA #$50
 	STA $1FA5
-	STX $1FA6 ; X=60. RTS
-	; $1FA4 now reads: INC <$50, RTS
-	
-	JSR WaitForVBlank
-	JSR Clockslide_29780 ; Set the vblank flag.
 	LDA #$60
-	JSR SetPPUReadBufferToA
+	STA $1FA6 ; A=60. RTS
+	; $1FA4 now reads: INC <$50, RTS
+
+	
+	JSR SetPPUReadBufferToA ; For a revision E or earlier ppu.
+	
 	LDA #$10
 	STA $2002; update PPU bus with $10 (opcode for BPL)
-	CLC
 	JSR $2000; jump to PPU registers.
 	; $2000: (opcode: $10 = BPL)
 	; $2001: (operand: $10. BPL $2012)
@@ -1922,6 +1924,14 @@ Stress2004_RevE_SkipMSG:
 ;;;;;;;
 
 TEST_2004_Stress:
+
+	;;; Test 1 [$2004 Stress Test]: Pre test to make sure the emulator won't crash  ;;;
+
+	LDA <result_VblankSync_PreTest
+	BEQ FAIL_2004_Stress
+	INC <ErrorCode
+
+
 	; Verify revision G PPU behavior
 	LDX #1
 	LDA #5
@@ -1948,7 +1958,7 @@ TEST_2004_Stress_Prep:
 	INX
 	BNE TEST_2004_Stress_Prep
 
-	;;; Test 1 [$2004 Stress Test]: Reads from $2004 return the OAM Buffer. Let's verify the OAM Buffer is correct on every ppu cycle of a scanline ;;;
+	;;; Test 2 [$2004 Stress Test]: Reads from $2004 return the OAM Buffer. Let's verify the OAM Buffer is correct on every ppu cycle of a scanline ;;;
 	; OAM is set up with the following pattern: $FF to $00 descending.
 	; This will result in less than 8 objects on the taget scanline, so the OAM address will overflow.
 
@@ -1958,7 +1968,7 @@ TEST_2004_Stress_Prep:
 	BEQ FAIL_2004_Stress 
 	
 	INC <ErrorCode
-	;;; Test 2 [$2004 Stress Test]: Reads from $2004 return the OAM Buffer. Let's verify the OAM Buffer is correct on every ppu cycle of a scanline ;;;
+	;;; Test 3 [$2004 Stress Test]: Reads from $2004 return the OAM Buffer. Let's verify the OAM Buffer is correct on every ppu cycle of a scanline ;;;
 	; OAM is set up with the following pattern: 8 objects in range, then $00 to $BF ascending.
 	; Since there will be 8 objects on the target scanline, we will see the glitchy OAM ADDR increment behavior.
 	
@@ -2119,12 +2129,12 @@ TEST_2004_Stress_Evaluate:
 	LDA $500, Y                         ; The results might be off-by-one due to clock alignment alignment.
 	CMP #$FF                            ; Let's see if it is.
 	BNE TEST_2004_Stress_Eval_DontShift ; If not, skip ahead.
-	JSR Test_2004_Stress_ShiftBy1       ; Shift the entire table of results over to the right a single byte. Increment $60 to indicate we did this.
+	JSR Test_2004_Stress_ShiftBy1       ; Shift the entire table of results over to the right a single byte. Increment address $6F to indicate we did this.
 	LDA #$40
 	STA <$00
 	BIT <$00                            ; Set the overflow flag to indicate we had to shift everything over.
 TEST_2004_Stress_Eval_DontShift:
-	LDA [$0060], Y  ; Load the first byte of the answer key.
+	LDA [$0060], Y                      ; Load the first byte of the answer key.
 	STA <$50                            ; use address $50 as a copy of the previously read value.
 	
 TEST_2004_Stress_Eval1_Loop1:            ; Check the first 256 bytes of the results.
@@ -2134,19 +2144,19 @@ TEST_2004_Stress_Eval1_Loop1:            ; Check the first 256 bytes of the resu
 	CMP <$50                             ; Compare with the value from the previous iteration.
 	BEQ TEST_2004_S_Eval1_NoBitFlips     ; If it's the same as last time, then there cannot be bit flips.
 	                                     ; There can be bit flips here, but the bits are only ever flipping from 1 to 0.
-	LDA [$0060], Y   ; Load the expected result.
+	LDA [$0060], Y                       ; Load the expected result.
 	EOR #$FF                             ; Flip all the bits.
 	AND $500, Y                          ; bitwise AND with the value read.
     BNE TEST_2004_Stress_Eval1_Fail      ; Bitflips can ONLY result in bits going from 1 to 0, so if we have anything in the result here, then you are wrong.
 	BEQ TEST_2004_Stress_Eval1_Continue  ; Skip ahead
                                          ;
 TEST_2004_S_Eval1_NoBitFlips:            ; If we know there aren't bit flips in the data, then just compare with the asnwer key.
-	CMP [$0060], Y   ;
+	CMP [$0060], Y                       ;
 	BNE TEST_2004_Stress_Eval1_Fail      ;
 TEST_2004_Stress_Eval1_Continue:         ;
-	LDA [$0060], Y   ; Load the expected result.
+	LDA [$0060], Y                       ; Load the expected result.
 	STA <$50                             ; Update the byte that stores the previously read value.
-	INX                                  ;
+	INY                                  ;
 	BNE TEST_2004_Stress_Eval1_Loop1     ;
 	
 	INC <$61 ; Increment the high byte of the pointer.
@@ -2158,20 +2168,20 @@ TEST_2004_Stress_Eval1_Loop2:                ; Check the next 85 bytes of the re
 	CMP <$50                                 ; Compare with the value from the previous iteration.
 	BEQ TEST_2004_S_Eval1_2NoBitFlips        ; If it's the same as last time, then there cannot be bit flips.
 	                                         ; There can be bit flips here, but the bits are only ever flipping from 1 to 0.
-	LDA [$0060], Y   ; Load the expected result.
+	LDA [$0060], Y                           ; Load the expected result.
 	EOR #$FF                                 ; Flip all the bits.
 	AND $600, Y                              ; bitwise AND with the value read.
     BNE TEST_2004_Stress_Eval1_Fail          ; Bitflips can ONLY result in bits going from 1 to 0, so if we have anything in the result here, then you are wrong.
 	BEQ TEST_2004_Stress_Eval1_2Continue     ; Skip ahead
                                              ;
-TEST_2004_S_Eval1_2NoBitFlips:           ; If we know there aren't bit flips in the data, then just compare with the asnwer key.
-	CMP [$0060], Y   ;
+TEST_2004_S_Eval1_2NoBitFlips:               ; If we know there aren't bit flips in the data, then just compare with the asnwer key.
+	CMP [$0060], Y                           ;
 	BNE TEST_2004_Stress_Eval1_Fail          ;
 TEST_2004_Stress_Eval1_2Continue:            ;
-	LDA [$0060], Y   ; Load the expected result.
+	LDA [$0060], Y                           ; Load the expected result.
 	STA <$50                                 ; Update the byte that stores the previously read value.
-	INX                                      ;
-	CPX #85                                  ; Check until address $341
+	INY                                      ;
+	CPY #85                                  ; Check until address $341
 	BNE TEST_2004_Stress_Eval1_Loop2         ;
 	
 	LDA #1
@@ -2260,7 +2270,8 @@ TEST_2002FlagTiming:
 	; If you are failing this test, you might be inclined to scoot the sprite flags over, so they get cleared on dot 0, but that's not the proper solution.
 	; Here's what's going on:
 	
-	; Reads from $2002 will read the vblank flag at the beginning of the read (when M2 goes high) and the sprite flags are read at the end (when M2 goes low)
+	; Reads from $2002 will latch the state of the vblank flag at the beginning of the read (when M2 goes high),
+	; but the sprite flags are not latched, so the value you get back is the state of the sprite flags at the end of the read. (when M2 goes low)
 	; On a revision G CPU, M2 has a duty cycle of 15/24, meaning that there are 7.5 master clock cycles between M2 going high and M2 going low.
 	; In other words, the sprite flags are read approximately 1.875 PPU cycles after the vblank flag is read.
 	
@@ -2417,106 +2428,22 @@ Test_2002_FlagSet_Loop:
 	JMP Test_2002_FlagSet_Loop
 
 TEST_2002_FlagSet_DataComplete:
-
 	RTS
 ;;;;;;;	
 
-FAIL_BGSerialIn:
-	JSR WaitForVBlank
-	JSR SetUpDefaultPalette
-	JMP TEST_Fail
-;;;;;;;;;;;;;;;;;
-
-TEST_BGSerialIn:
-	;;; Test 1 [BG Serial In]: Pre-test, verify sprite zero hits. ;;;
-	; To be honest, this is an insane test that makes a sprite zero hit occur when the nametable is entirely translucent pixels.
-	; We just need to confirm that the sprite zero hit doesn't happen :)
-	JSR DisableRendering       ; Disable rendering so the following can happen even out of vblank.
-	JSR ClearNametable2_With24 ; Clear nametable 2 with tile $24 (empty tiles)
-	JSR ClearPage2             ; Clear Page 2 with all $FFs
-	JSR SetUpSpriteZero        ; Prepare sprite zero with the following values:
-	.byte $00, $C0, $03, $92   ; Single dot on scanline 1, X = 80
-	JSR PrintCHR               ; Update the color palette so the visual artifacts of this test are visible.
-	.word $3F0D                ; Starting with index 01 of palette 3:
-	.byte $0F, $30, $26, $FF   ; Black, White, Red. (terminator byte)
-	JSR SetPPUADDRFromWord     ; Move t register to $2C00
-	.byte $2C, $00             ; 
-	JSR EnableRendering        ; Enable rendering.
-	JSR WaitForVBlank          ; Wait for vblank. The prep work is now complete.
-	
-	JSR WaitForVBlank          ; Wait for an entire frame to render, so we can read the state of the Sprite Zero Hit Flag.
-	LDA $2002                  ; Read from PPUSTATUS
-	AND #$40                   ; Single out the Sprite Zero Hit flag.
-	BNE FAIL_BGSerialIn        ; If a sprite zero hit did somehow occur, fail the test.
-	INC <ErrorCode             ; And increment the error code to 2.
-	
-	;;; Test 2 [BG Serial In]: Can we make a sprite zero hit occur on an empty nametable by preventing the BG shift registers from loading pattern data? ;;;
-	; The background shift registers are loaded with pattern data every 8 ppu cycles. (from the range of dots 0 to 255, and dots 320 to 335)
-	; If you were to disable rendering just before the data would be loaded, and re-enable rendering just after the data would have been loaded, you could draw the Serial Input values for the shift registers.
-	; Let's have a quick crash course on the timing of this all, and what the shift registers are doing. (https://www.nesdev.org/wiki/PPU_signals)
-	; On dots 0 through 255, (and dots 320 through 335) the PPU:
-	; reads from the nametable       (dot % 8 == 0 and 1), 
-	; reads from the attribute table (dot % 8 == 2 and 3), 
-	; reads from the pattern table   (dot % 8 == 4 and 5), 
-	; reads from the pattern table   (dot % 8 == 6 and 7). 
-	;
-	; So what are the background shift registers doing during this time?
-	; The background shift registers are shifted on all of these cycles.
-	; So for instance, using the example [00110011 00110011]...
-	; would be shifted left to the value [01100110 01100110].
-	; The lowest bit (the new value shifted in on the right) is a 0 for the low bit plane, and a 1 for the high bit plane.
-	; So if this was the high bit plane, using the example [00110011 00110011]...
-	; instead the value would be shifted left to the value [01100110 01100111].
-	
-	; Since the data read from the pattern tables is loaded into the shift registers on (dot % 8 == 7),
-	; If we disable rendering on (dot % 8 == 6) and re-enable rendering on (dot % 8 == 0), then we can draw a large amount of these '1' bits that keep getting shifted in.
-	;
-	; Keep in mind, writes to $2001 don't happen immediately when the CPU writes there, and has a delay of 2 to 5 ppu cycles, depending on the ppu and the clock alignments.
-	; This just means that it's really tedious to test for this, since (depending on the ppu or the alignment) the writes to disable/enable rendering could happen in most of the range form dots 0 to 7.
-
-	JSR Sync_ToPreRenderDot324 ; It's actually syncing to (scanline 0, dot 1) - 18 ppu cycles.
-	JSR Clockslide_100         ; I'm going to stall until a specific ppu cycle.
-	JSR Clockslide_49          ; Somewhere, middle of the screen-ish, after a few scanlines.
-	LDY #120                   ; Y only ticks down in 2/3rds of the iterations in the upcoming loop. This will run 180 times.
-	LDX #3                     ; Since there are 113.666 cpu cycles per scanline, I run 114, 114, then 113 in a repeating pattern. This keeps the action relatively in the same place each scanline.
-TEST_BGSerialIn_Loop:
-	LDA #$0   ; (counting ppu cycles % 8)                        ; +2
-	STA $3E01 ; disable rendering (4-5-6)                        ; +4 = 6   ; Additional comment: Writing to a mirror of $2001. This prevents a hardware issue where the wrong value is written to the ppu register for a single ppu cycle.
-	LDA #$1E  ; (7-0-1) (2-3-4)                                  ; +2 = 8
-	STA $2001 ; (5-6-7) (0-1-2) (3-4-5) (6-7-0) enable rendering ; +4 = 12  ; Additional comment: The write to $2001 happens on ppu dot%8 == 6, but adding the smallest known delay of 2 brings us to dot%8 == 0.
-	JSR Clockslide_50                                            ; +50 = 62 ; Additional comment: The rest of this incredibly sloppy loop here is just counting cycles to make this happen in approximately the same place next scanline.
-	JSR Clockslide_37                                            ; +37 = 99
-	DEX                                                          ; +2 = 101
-	BNE TEST_BGSerialIn_WasteACycle                              ; +2 or 3 = 103 or 104
-	LDX #3                                                       ; +2 = 105
-	NOP                                                          ; +2 = 107
-	LDA <$00                                                     ; +3 = 110
-	JMP TEST_BGSerialIn_Loop                                     ; +3 = 113
-TEST_BGSerialIn_WasteACycle:
-	DEY                                                          ; +2 = 106
-	BEQ TEST_BGSerialIn_Exit ; Exit the loop if Y = 0.           ; +2 = 108
-	LDA <$00                                                     ; +3 = 111
-	JMP TEST_BGSerialIn_Loop                                     ; +3 = 114
-TEST_BGSerialIn_Exit:
-	LDA $2002                ; Anyway, I could've just done that once instead of across the entire screen, but it was suggested to make it more visible.
-	AND #$40                 ; Keep in mind, this value should show up as a white line, (color %10 of palette %11) instead of red, color %11 of palette %11.
-	BEQ FAIL_BGSerialIn2     ; So we check if a sprite zero hit occured, masked away everything but the sprite zero hit flag, and fail the test if no hit occured.
-	;; END OF TEST ;;
-
-	JSR WaitForVBlank        ; Wait for vblank...
-	JSR SetUpDefaultPalette  ; Fix the color palette.
-	LDA #1                   ; Return 1 to indicate a pass.
-	RTS
-;;;;;;;
-FAIL_BGSerialIn2:
-	JMP FAIL_BGSerialIn
-;;;;;;;;;;;;;;;;;
-
 TEST_2007_Stress:
+
+	;;; Test 1 [$2007 Stress Test]: Pre test to make sure the emulator won't crash  ;;;
+
+	LDA <result_VblankSync_PreTest
+	BEQ TEST_2002FCT_Fail ; just re-use this fail case.
+	INC <ErrorCode
+
+	; With that taken care of, let's run some preparations
+
 	; clear nametable 2.
 	JSR DisableRendering
 	JSR ClearNametable2
-	JSR ClearPage2
 
 	; Write 00 01 02 03... from $2C00 through $2FFF
 	JSR SetPPUADDRFromWord
@@ -2537,9 +2464,7 @@ TEST_2007StressTest_Loop1:
 	STX $2001
 	; 2 cpu cycles have passed.
 	JSR ClockslideFromWord ; 
-	.word 28000-5
-	JSR ClockslideFromWord ; 
-	.word 29780
+	.word 29780+28000-5
 	JSR ClockslideFromWord ; 
 	.word 29781-540
 	
@@ -2603,7 +2528,7 @@ TEST_2007StressTest_Loop3:
 	JMP TEST_2007StressTest_Loop3 
 TEST_2007StressTest_Exit:
 
-	;;; Test 1 [$2007 Stress Test]: What data goes into the PPU Read Buffer if we read from $2007 in the middle of a visible scanline? ;;;
+	;;; Test 2 [$2007 Stress Test]: What data goes into the PPU Read Buffer if we read from $2007 in the middle of a visible scanline? ;;;
 
 	; Okay, let's talk about this test.
 	
@@ -2655,34 +2580,252 @@ TEST_2007StressTest_Exit:
 	; Once the M2 line of the CPU goes low, the read has ended. At the moment the read ends, the PPU DATA State machine begins.
 	; - Keep in mind, the PPU clock could be high or low at the moment the state machine begins.
 	; - For the purposes of the following lines, when I say "One PPU cycle after the state machine begins", I mean the PPU clock must go low then high again after the state machine begins. 
-	;   - If the state machine begins while the clock is low, you need to wait for it to go high, then low, then high again, and now it's one ppu cycle after the state machine began.
+	;   - If the state machine begins while the clock is low, you need to wait for it to go high (now the state machine begins), then low, then high again, and now it's one ppu cycle after the state machine began.
 	; One PPU cycle after the state machine begins, the address latch is set up. (The address bus is set up using the value of the v register)
-	; Two PPU cycles after the state machine begins, read from memory. This read will update the PPU Read Buffer.
+	; Two PPU cycles after the state machine begins, the state machine is effectively "idle". Neither setting up the address, nor reading.
+	; Three PPU cycles after the state machine begins, read from memory. This read will update the PPU Read Buffer.
 	
 	; Keep in mind, reading from memory does not include Palette RAM. Palette RAM is internal to the PPU, so the address/data bus will just read from the cartridge or the nametable for the value used for the PPU Read Buffer.
 	
 	; So with this information in mind, what happens if you read $2007 in the middle of a visible scanline?
 	; Well, it all depends on exactly when the read ends, since that's what starts the PPU DATA State Machine.
-	; Let's say the read ends on dot 0, while the ppu clock is high. Here's what happens next.
-	; on dot 1, the address bus would normally be set up with v due to the PPU DATA State Machine, but in reality, the background fetch takes priority, so the address bus + latch are set up using the address for the nametable read.
-	; on dot 2, the nametable fetch occurs just fine, this is also the value that goes into the PPU Read Buffer.
-	; Wow! The read from $2007 didn't use `v`, but instead used the nametable address that was used during the background fetch.
 	
-	; But something even more interesting happens if you read from $2007 in a way that is mis-aligned from the PPU's background/sprite fetch read cadence.
-	; * NOTE: The following is just one of many possible outcomes. This is analogue behavior, and does not reflect the behavior of all consoles. Not even the behavior of all consoles tested.
-	; Let's say the read ends on dot 1, while the ppu clock is high. Here's what happens next.
-	; on dot 2, the address bus would normally be set up with v due to the PPU DATA State Machine, but the PPU is currently reading from the nametable! 
-	; - This results in analogue behavior, since we are simultaneously attempting to use these 8 pins as the data bus, but also to set up the 8-bit address latch!
-	; on dot 3, the address bus is once again changed due to the read cadence, but the PPU is now trying to read for the value that goes into the read buffer!
-	; - Once again, this is analogue behavior, as we are simultaneously attempting to use these 8 pins as the data bus, but also to set up the 8-bit address latch!
-	; - The end result is typically this: The value that goes into the read buffer is read from an address where the high byte is determined by the read cadence, and the value of the 8-bit address latch is the result of the read from the address determined by the read cadence.
-	;   - for instance, this cycle would set up the address bus to read from the attribute tables. let's say this address is $23C0. If address $23C0 would read $5A, then the value that goes into the buffer is the value at address $235A.*
-	; * NOTE: This is at least the behavior I noticed on my console. This is analogue behavior, and does not reflect the behavior of all consoles. Not even the behavior of all consoles tested.
+	; NOTE: The PPU Read Cadence takes two cycles per read, but the State Machine takes three!
+	; This will always result in at least one read being affected by simultaneously setting up the Octal Latch (using the lower 8 bits as the address bus) and reading from memory (using the lower 8 bits as a data bus).
+	; In fact, this will always result in at least one unstable fetch for the read cadence, but depending on how it lines up, the read for the state machine can be stable or unstable.
 	
-	; So depending on how the read from the PPU DATA State Machine aligns with the PPU Background/Sprite fetch read cadence, the result is either stable or unstable.
+	;;; Unstable Read Cadence, Stable Read Buffer ;;;
+	; Let's say the read ends on dot 0, while the ppu clock is low. (one half cycle before dot 1) Here's what happens next.
+	; on dot 1, the state machine hasn't started yet. The read cadence sets "ALE", and the address bus is updated.
+	; on dot 2, we have a problem. Both "ALE" (from the state machine) and "Read" (from the read cadence) are true. This results in an analogue feedback loop, which will affect the read from the nametable.
+	; on dot 3, the state machine is idle, but the read cadence once again sets up the address bus.
+	; on dot 4, the "Read" line is synced between the read cadence and the state machine, so the value read from the attribute table will also go into the Read Buffer.
+	
+	;;; Unstable Read Cadence, Unstable Read Buffer ;;;
+	; Let's say the read ends on dot 0, while the ppu clock is high. (two half cycles before dot 1) Here's what happens next.
+	; on dot 1, "ALE" is set by both the read cadence, and the state machine. The address bus would normally be set up with v due to the PPU DATA State Machine, but in reality, the background fetch takes priority, so the address bus + latch are set up using the address for the nametable read.
+	; on dot 2, the nametable fetch occurs just fine. The state machine is idle.
+	; on dot 3, we have a problem. Both "ALE" and "Read" are true. This results in an analogue feedback loop affecting the data read and the octal latch. The result of this read goes into the read buffer.
+	; on dot 4, the Read Cadence also reads from an unstable address, since it uses the octal latch which was experiencing a feedback loop on the previous cycle.
+	
+	; So depending on how the read from the PPU DATA State Machine aligns with the PPU Background/Sprite fetch read cadence, the result going into the read buffer is either stable or unstable.
 	; Naturally, we'll only be checking the results of the stable reads.
 
-	; Speaking of the results, here are the expected results from the loop above.
+	;;;;;;;;;;;;;;;;;;;;;;;;;;
+	; PPU DATA State Machine ;
+	;;;;;;;;;;;;;;;;;;;;;;;;;;
+	; Let's talk about ths PPU DATA state machine in extra detail, just to clear things up.
+	; Reads and writes have their own state machines and they behave in pretty much the same way, but the timing of the outputs is different.
+	;
+	;
+	;
+	; Below, we have a circuit diagram of this state machine. If this is a lower level than you are used to, allow me to explain what's going on here.
+	;
+	; A┌─────┐
+	;  │ NOR │Q
+	; B└─────┘
+	;
+	; This is a NOR gate. If either input (A, B) is true, the output (Q) is false. You can think of this as `if(!(A || B))` or `if(!A && !B)`
+	;
+	;;;;;;;;;;;;;
+	;
+	;  ┌───────┐
+	; E│       │Q
+	;  │D_Latch│
+	; D│   0   │/Q
+	;  └───────┘
+	;
+	; This is a D Latch.
+	; The E input enables the latch, while the D input is the value that gets stored.
+	; For instance, if E is true, the output (Q) will be set the the value of D. Then if E is false, changing D does not change Q
+	; /Q is the opposite of Q. So if Q is true, /Q is false.
+	;
+	; You will see in the diagram below that the "E input" for the D latch is driven by PPU_Clock or /PPU_Clock.
+	; This means that on the first half of the PPU cycle (when the clock is high) the D input is recorded for some D Latches,
+	; and on the second half of the PPU cucle (when the clock is low) the D input is recorded for the other D Latches.
+	; You will also notice in the dragram below that the chain of D Latches is connected using their /Q output.
+	;
+	;;;;;;;;;;;
+	;
+	; S┌────┐Q
+	;  │ SR │
+	; R└────┘/Q
+	;
+	; This is an SR latch.
+	; If S is ever true, then Q is set to be false.
+	; If R is ever true, then Q is set to be true.
+	; The SR latch will hold its state until either S or R are true. 
+	; This means that S could be true for a very brief amount of time, and Q will be false ultil R is ever true.
+	; At which point, Q will be true until S is ever true.
+	;
+	; If S and R are ever simultaneously true, both Q and /Q are false. This probably doesn't happen in the state machine though...
+	;
+	;;;;;;;;;;;;;;
+	; $2007 read ;
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;                                                                                                                                                  ;
+	;                                                                                                                                                  ;
+	;  PPU_Clock  ├────────────────────────┬───────────────────────────────┬───────────────────────────────┐                                           ;
+	;                                      │                               │                               │                                           ;
+	;  /PPU_Clock ├────────────────────────│───────────────┬───────────────│───────────────┐               │                                           ;
+	;                                      │               │               │               │               │              /D_Latch2                    ;
+	;                                      │               │               │             ┌─│───────────────│──────────────────────►┌─────┐             ;
+	;                                      │               │               │             │ │               │                       │ NOR ├─────► ALE   ;
+	;                                      │               │               │             │ │               │             ┌────────►└─────┘             ;
+	;                                      │               │               │             │ │               │             │ D_Latch4                    ;
+	;                                      │   ┌───────┐   │   ┌───────┐   │   ┌───────┐ │ │   ┌───────┐   │   ┌───────┐ │                             ;
+	;                                      └──►│       │   └──►│       │   └──►│       ├┐│ └──►│       │   └──►│       ├─┘                             ;
+	;  $2007_Read ├─┬───────────►┌─────┐       │D_Latch│       │D_Latch│       │D_Latch│││     │D_Latch│       │D_Latch│                               ;
+	;               │            │ NOR ├──────►│   0   ├──────►│   1   ├──────►│   2   ├│┴────►│   3   ├───┬──►│   4   ├─┐                             ;
+	;               │         ┌─►└─────┘       └───────┘       └───────┘       └───────┘│      └───────┘   │   └───────┘ │                             ;
+	;               └─►┌────┬─┘                                                         │                  │             │/D_Latch4                    ;
+	;                  │ SR │                                                           │                  │             └────────►┌─────┐             ;
+	;               ┌─►└────┘                                                           │                  │                       │ NOR ├─────► Read  ;
+	;               │                                                                   └──────────────────│──────────────────────►└─────┘             ;
+	;               └──────────────────────────────────────────────────────────────────────────────────────┘               D_Latch2                    ;
+	;                /D_Latch3                                                                                                                         ;
+	;                                                                                                                                                  ;
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;
+	; PPU_Clock is high on the first half of a ppu cycle, and low on the second half.
+	; /PPU_Clock is low on the first half of a ppu cycle, and high on the second half.
+	; $2007_Read is high when the CPU is reading from address $2007 (or a mirror of address $2007) and remains high until the CPU read cycle ends. (M2 goes low.)
+	;
+	; NOTE: The SR latch by default is outputting true. (preventing the NOR gate from outputting true. $2007_Read will make the SR latch output false, and this NOR gate will need to wait for the read to end.
+	;
+	;
+	; When ALE is high, the lower 8 bits of the address bus is set up with the lower 8 bits of v, and these 8 bits are also stored in an octal latch outside the PPU.
+	; When Read is high, the PPU performs the read from memory.
+	;
+	; Here's a timeline of an LDA $2007, and how this affects the latches, ALE, and Read.
+	;
+	;┌──────┬───┬───┬───────┬───────┬───────┐
+	;│ Time │ R │SR │Latches│  ALE  │ Read  │
+	;├──────┼───┼───┼───────┼───────┼───────┤
+	;│ d    │ 0 │ 1 │ 01010 │ false │ false │
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the opcode.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the opcode.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; M2 is low.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the low byte operand.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the low byte operand.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; M2 is low.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the high byte operand.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the high byte operand.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; M2 is low.
+	;│ ...  │ 1 │ 0 │ 01010 │ false │ false │ ; The CPU is reading from $2007
+	;│ t0.0 │ 1 │ 0 │ 01010 │ false │ false │ ; The CPU is reading from $2007
+	;│ t0.1 │ 0 │ 0 │ 01010 │ false │ false │ ; M2 is low.
+	;│ t1.0 │ 0 │ 0 │ 11010 │ false │ false │
+	;│ t1.1 │ 0 │ 0 │ 10010 │ false │ false │
+	;│ t2.0 │ 0 │ 0 │ 10110 │ true  │ false │ ; ALE is true.
+	;│ t2.1 │ 0 │ 1 │ 10100 │ true  │ false │ ; ALE is (still) true.
+	;│ t3.0 │ 0 │ 1 │ 00101 │ false │ false │
+	;│ t3.1 │ 0 │ 1 │ 01101 │ false │ false │
+	;│ t4.0 │ 0 │ 1 │ 01001 │ false │ true  │ ; Read is true.
+	;│ t4.1 │ 0 │ 1 │ 01011 │ false │ true  │ ; Read is (still) true.
+	;│ t5.0 │ 0 │ 1 │ 01010 │ false │ false │
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │
+	;└──────┴───┴───┴───────┴───────┴───────┘
+	; Time is how many cycles have passed since the end of the CPU Read cycle.
+	; - d just shows the default state of all these latches, and outputs.
+	; tn.0 is the first half of the PPU cycle when the clock is high. (PPU_Clock)
+	; tn.1 is the second half of the PPU cycle when the clock is low. (/PPU_Clock)
+	; t0.1 will be the half-cycle in which the CPU stops reading from $2007.
+	;
+	; R is the state of $2007_Read.
+	;
+	; SR is the state of the Q output of the SR latch.
+	;
+	; Latches shows the state of the Q output for all 5 D_Latches.
+	; - In this table, the leftmost bit is "D_Latch 0", and the rightmost bit is "D_Latch 4"
+	; - NOTE: All these latches are connected to each other using the /Q output! This means that "D_Latch n+1" will be latched with the opposite value of "D_Latch n"
+	;
+	; You can see from the output that ALE is true for two half-cycles, the state machine is idle for two half-cycles, then Read is true for two half-cycles.
+	;
+	;
+	; Currently, writes to $2007 aren't a part of this test, but while I'm here...
+	;
+	;;;;;;;;;;;;;;;
+	; $2007 write ;
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;                                                                                                                                                  ;
+	;                                                                                                                                                  ;
+	;  PPU_Clock  ├────────────────────────┬───────────────────────────────┬───────────────────────────────┐                                           ;
+	;                                      │                               │                               │                                           ;
+	;  /PPU_Clock ├────────────────────────│───────────────┬───────────────│───────────────┐               │                                           ;
+	;                                      │               │               │               │               │              /D_Latch2                    ;
+	;                                      │               │               │             ┌─│───────────────│──────────────────────►┌─────┐             ;
+	;                                      │               │               │             │ │               │                       │ NOR ├─────► ALE   ;
+	;                                      │               │               │             │ │               │             ┌────────►└─────┘             ;
+	;                                      │               │               │             │ │               │             │ D_Latch4                    ;
+	;                                      │   ┌───────┐   │   ┌───────┐   │   ┌───────┐ │ │   ┌───────┐   │   ┌───────┐ │                             ;
+	;                                      └──►│       │   └──►│       │   └──►│       │ │ └──►│       ├─┐ └──►│       ├─┘                             ;
+	; $2007_Write ├─┬───────────►┌─────┐       │D_Latch│       │D_Latch│       │D_Latch│ │     │D_Latch│ │     │D_Latch│                               ;
+	;               │            │ NOR ├──────►│   0   ├──────►│   1   ├───┬──►│   2   ├─┴────►│   3   ├─│─┬──►│   4   │                               ;
+	;               │         ┌─►└─────┘       └───────┘       └───────┘   │   └───────┘       └───────┘ │ │   └───────┘                               ;
+	;               └─►┌────┬─┘                                            │                             │ │               D_Latch3                    ;
+	;                  │ SR │                                              │                             └─│──────────────────────►┌─────┐             ;
+	;               ┌─►└────┘                                              │                               │                       │ NOR ├─────► Write ;
+	;               │                                                      └───────────────────────────────│──────────────────────►└─────┘             ;
+	;               └──────────────────────────────────────────────────────────────────────────────────────┘              /D_Latch1                    ;
+	;                /D_Latch3                                                                                                                         ;
+	;                                                                                                                                                  ;
+	;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+	;
+	; PPU_Clock is high on the first half of a ppu cycle, and low on the second half.
+	; /PPU_Clock is low on the first half of a ppu cycle, and high on the second half.
+	; $2007_Write is high when the CPU is writing to address $2007 (or a mirror of address $2007) and remains high until the CPU write cycle ends. (M2 goes low.)
+	;
+	; When ALE is high, the lower 8 bits of the address bus is set up with the lower 8 bits of v, and these 8 bits are also stored in an octal latch outside the PPU.
+	; When Write is high, the PPU performs the write to memory.
+	;	- NOTE: for simplicity, I am omitting a detail of "Write" where this line is suppressed during a write to Palette RAM.
+	;
+	; Here's a timeline of an STA $2007, and how this affects the latches, ALE, and Write.
+	;
+	;┌──────┬───┬───┬───────┬───────┬───────┐
+	;│ Time │ W │SR │Latches│  ALE  │ Write │
+	;├──────┼───┼───┼───────┼───────┼───────┤
+	;│ d    │ 0 │ 1 │ 01010 │ false │ false │
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the opcode.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the opcode.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; M2 is low.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the low byte operand.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the low byte operand.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; M2 is low.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the high byte operand.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; The CPU is reading the high byte operand.
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │ ; M2 is low.
+	;│ ...  │ 1 │ 0 │ 01010 │ false │ false │ ; The CPU is writing to $2007
+	;│ t0.0 │ 1 │ 0 │ 01010 │ false │ false │ ; The CPU is writing to $2007
+	;│ t0.1 │ 0 │ 0 │ 01010 │ false │ false │ ; M2 is low.
+	;│ t1.0 │ 0 │ 0 │ 11010 │ false │ false │
+	;│ t1.1 │ 0 │ 0 │ 10010 │ false │ false │
+	;│ t2.0 │ 0 │ 0 │ 10110 │ true  │ false │
+	;│ t2.1 │ 0 │ 1 │ 10100 │ true  │ false │
+	;│ t3.0 │ 0 │ 1 │ 00101 │ false │ false │
+	;│ t3.1 │ 0 │ 1 │ 01101 │ false │ true  │
+	;│ t4.0 │ 0 │ 1 │ 01001 │ false │ true  │
+	;│ t4.1 │ 0 │ 1 │ 01011 │ false │ false │
+	;│ t5.0 │ 0 │ 1 │ 01010 │ false │ false │
+	;│ ...  │ 0 │ 1 │ 01010 │ false │ false │
+	;└──────┴───┴───┴───────┴───────┴───────┘
+	; Time is how many cycles have passed since the end of the CPU Write cycle.
+	; - d just shows the default state of all these latches, and outputs.
+	; tn.0 is the first half of the PPU cycle when the clock is high. (PPU_Clock)
+	; tn.1 is the second half of the PPU cycle when the clock is low. (/PPU_Clock)
+	; t0.1 will be the half-cycle in which the CPU stops writing to $2007.
+	;
+	; W is the state of $2007_Write.
+	;
+	; SR is the state of the Q output of the SR latch.
+	;
+	; Latches shows the state of the Q output for all 5 D_Latches.
+	; - In this table, the leftmost bit is "D_Latch 0", and the rightmost bit is "D_Latch 4"
+	; - NOTE: All these latches are connected to each other using the /Q output! This means that "D_Latch n+1" will be latched with the opposite value of "D_Latch n"
+	;
+	; You can see from the output that ALE is true for two half-cycles, the state machine is idle for one half-cycle, then Write is true for two half-cycles.
+	
+	; All of that to say, every ppu cycle will alternate from stable to unstable (and why), and now we can talk about the results of this test.
 	
 	; - Key -	
 	; NT : Nametable Fetch
@@ -2716,6 +2859,9 @@ TEST_2007StressTest_Exit:
 	; $640:  ?? 00 ?? C0 ?? 66 ?? 66 ?? 01 ?? C0 ?? 38 ?? 38 ; Background fetch
 	; $650:  ?? 02 ?? 02 ??                                  ; Dummy Background fetch
 	; * During "Sprite Fetch" and the "Dummy Background Fetch", the AT reads are NT reads.
+	
+	; A console with a 2C05-99 PPU has been seen to have unstable attribute fetches sometimes, assumed to be clock alignment related.
+	;	- For better or worse, I'm considering that situation a "fail", and looking for stable attribute fetches for this test.
 
 	; The answer key below only includes the non-?? bytes.
 	
@@ -2732,10 +2878,10 @@ TEST_2007StressTest_Exit:
 	;;;;;;;;;;;;;;;;;;;
 	; COMMON MISTAKES ;
 	;;;;;;;;;;;;;;;;;;;
-	; The PPU Read Buffer should be set up 2 ppu cycles after the CPU Read to $2007 ends. Read up on the PPU DATA State Machine, as mentioned above.
+	; The PPU Read Buffer should be set up 4 ppu cycles after the CPU Read to $2007 ends. Read up on the PPU DATA State Machine, as mentioned above.
 	; Sprite fetch should not be performing attribute table fetches, rather it should perform two nametable fetches in a row.
 	; The "Dummy Background Fetch" phase should not be performing attribute table fetches, rather it should perform two nametable fetches in a row, and the first cycle of a pattern fetch.
-	; The dummy nametable fetch on dot 257 should be reading from the OLD high byte of v before the v register is "horizontally reset".
+	; The dummy nametable fetch on dot 257 should be reading from the OLD value of v before the v register is "horizontally reset".
 	;;;;;;;;;;;;;;;;;;;
 
 	; Honestly, this test is a lot less intimidating than it could be, since I cannot require the analogue behavior to behave in a specific way.
@@ -2751,7 +2897,8 @@ TEST_2007StressTest_Exit:
 	BEQ TEST_2007StressTest_RotateSkip ; Otherwise, if we don't need to shift all the data, just skip ahead to evaluate it.
 	
 	LDA $502
-	CMP #$C0                           ; Address $502 is correct, but $504 wasn't, then we were off by one. Just fix that real quick...
+	CMP #$C0                           ; Address $502 is correct, but $503 wasn't, then we were off by one. Just fix that real quick...
+	BNE TEST_2007StressTest_Fail       ; Otherwise, then the data was wrong (and it wasn't off by one address) so fail the test.
 	
 	LDA $654                           ; Store the final byte at $7FF
 	STA $7FF                           ; We're reusing the Test_2004_Stress_ShiftBy1 routine, which copies address $7FF into $500.
@@ -2825,7 +2972,181 @@ TEST_2007StressTest_Key: ; This is every other byte from the data. Honestly a re
 	.byte $00, $C0, $66, $66, $01, $C0, $38, $38
 	.byte $02, $02
 
+TEST_APURegActivation_Finale:
+	LDA #0
+	STA $4015
+	; The controller ports might not have been visible by the OAM DMA, but did the controller ports get clocked?
+	; This used to be an error code, but different consoles behave differently, so let's just print if it did or not.
+	LDA #0
+	STA <dontSetPointer ; prep this, since we're drawing stuff.
+	LDA $4016
+	LDA $4016	; it is assumed the B button is not pressed during the test.
+	LSR A
+	BCS TEST_APURegActivation_ConflictClocked	
+	; And the controller ports were NOT clocked here!
+	LDA <RunningAllTests
+	BNE TEST_APURegActivation_Res1
+	JSR PrintTextCentered
+	.word $2350
+	.byte "OAM DMA Bus Conflict no Clock", $FF
+	JSR ResetScroll
+TEST_APURegActivation_Res1:
+	LDA #5 ; Success Code 1
+	RTS
+	
+TEST_APURegActivation_ConflictClocked:
+	; Bingo! Look at that. The controller ports *were* clocked, but did not appear in OAM!
+	LDA <RunningAllTests
+	BNE TEST_APURegActivation_Res2
+	JSR PrintTextCentered
+	.word $2350
+	.byte "OAM DMA Bus Conflict Clocks", $FF
+	JSR ResetScroll
+TEST_APURegActivation_Res2:
+	LDA #9 ; Success Code 2
+	RTS
+;;;;;;;
 
+FAIL_InternalDataBus1:
+	JMP TEST_Fail
+
+TEST_StaleSpriteShiftRegs:
+	
+	;;; Test 1 [Stale Sprite Shift Registers]: Verify sprite zero hits are working. ;;;
+
+	JSR VerifySpriteZeroHits      ; We already have a subroutine to verify sprite zero hits are working properly.
+	BEQ FAIL_InternalDataBus1 ; If they aren't fail the test.
+	INC <ErrorCode
+
+	;;; Test 2 [Stale Sprite Shift Registers]: Disabling rendering does not stop the sprite counters. ;;;
+	; Basically, if a sprite should be drawn at a specific X coordinate, disabling rendering before that dot won't affect it.
+
+	JSR SetUpSpriteZero           ; Prepare sprite zero with the following values:
+	.byte $05, $C5, $03, $FE      ; 1x8 pixel stripe, but it's placed at X=$FE.	
+	LDA #2                        ; 
+	STA $4014                     ; OAM DMA with page 2.
+	
+	JSR WriteToPPUADDRWithByte    ; Put a box at $2C1F for the attempted sprite zero hit (that will fail)
+	.byte $2C, $1F                ; Aaddress $2C1F (upper right corner of the screen.)
+	.byte $FE, $FF                ; CHR $FE, (solid 8x8 box) followed by the terminator byte.
+	
+	JSR WriteToPPUADDRWithByte    ; While we're here, we might as well put a box at $2C00 for the next part of the test.
+	.byte $2C, $00                ; Address $2C00 (upper left corner of the screen.)
+	.byte $FE, $FF                ; CHR $FE, (solid 8x8 box) followed by the terminator byte.
+	
+	JSR ResetScroll_2C00          ; Reset the scroll to nametable address $2C00.
+	
+	JSR Sync_ToLine0Dot1          ; sync the CPU to dot 1 of scanline 0.
+	JSR ClockslideFromWord        ; stall 568 CPU cycles. (stall until scanline 5 dot 0)
+	.word 568                     ; ^
+	LDA #0                        ;
+	STA $2001                     ; Disable rendering around dot 15-ish
+	LDA #$1E                      ;
+	STA $2001                     ; Enable rendering around dot 33-ish
+	                              ; Rendering was disabled for 18 ppu cycles, but the sprite counters were NOT halted during that time.
+	                              ; If they were halted, then the sprite wouldn't be drawn at all, as HBlank would begin before the counters reach zero.
+	                              ; But since they weren't halted, the sprite will still be drawn at X=FE, therefore the sprite zero hit still works.
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
+	BEQ FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit did not occur here.
+	INC <ErrorCode
+
+	;;; Test 3 [Stale Sprite Shift Registers]: Disabling rendering does stop the sprite shifters. ;;;
+	; However, the actual process of using the shift register and drawing the sprite does get paused during Forced Blanking.
+
+	JSR SetUpSpriteZero           ; Prepare sprite zero with the following values:
+	.byte $04, $C5, $03, $30      ; 1x8 pixel stripe, but it's placed at X=$30.	
+	LDA #2                        ; 
+	STA $4014                     ; OAM DMA with page 2.
+
+	JSR Sync_ToLine0Dot1          ; sync the CPU to dot 1 of scanline 0.
+	JSR ClockslideFromWord        ; stall 562 CPU cycles. (stall until scanline 4 dot 322)
+	.word 562                     ; ^
+	LDA #0                        ;
+	STA $2001                     ; Disable rendering around dot 0-ish, while the background shifters are full.
+	JSR ClockslideFromWord        ; stall 1130 CPU cycles. (stall until scanline 14 dot 324)
+	.word 1130                    ; ^
+	LDA #$1E                      ;
+	STA $2001                     ; Enable rendering around scanline 14 dot 340
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
+	BEQ FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit did not occur here.
+	INC <ErrorCode
+
+	;;; Test 4 [Stale Sprite Shift Registers]: Additional check that a sprite at X=$FF doesn't trigger a sprite zero hit. ;;;
+	
+	JSR SetUpSpriteZero           ; Prepare sprite zero with the following values:
+	.byte $03, $C5, $03, $FF      ; 1x8 pixel stripe, but it's placed at X=$FF.	
+	LDA #2                        ; 
+	STA $4014                     ; OAM DMA with page 2.
+	
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
+	BNE FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit occured here.
+	INC <ErrorCode
+
+	;;; Test 5 [Stale Sprite Shift Registers]: What if we prepare the sprite counter but don't let the counter activate on dot 339? ;;;
+
+	; More info about how the sprite shifters work in case you need it:
+	; The sprites are only drawn after their "shifter counter" reaches zero. (each sprite being drawn has their own shifter counter)
+	; This shifter counter is initialized during sprite fetch when the X position of a sprite is determined. (using the value of the X position.)
+	; The shifter counter has two modes: "halted" and "counting".
+	; - When halted, the sprite is being drawn, and the sprite shifter is shifting.
+	; - when counting, the counter is simply decremented until it reaches zero. Once it reaches zero, it switches to "halted" mode.
+	; - If the ppu is rendering on dot 339, then the shifter counters are set to "counting". 
+	;   - If rendering was not enabled on dot 339, the shifter counters will be in whatever state they were previously in, which is likely "halted".
+	; The plan for this test is to let the counter reload with $FF, but leave the state as "halted" which will draw the sprite immediately as soon as rendering is enabled.
+	
+	; Rendering will be disabled before dot 339, and it will remaing that way through dot 339 (and quite a good bit into the following scanline).
+	; In other words, Dot 339 will be during F-Blank.
+	; This prevents the counters from changing their state from "halted" to "counting". 
+	; Since they will be in the "halted" state as soon as rendering is enabled, the sprite will be draws as soon as rendering is enabled, triggering the sprite zero hit.
+
+	JSR Sync_ToLine0Dot1          ; sync the CPU to dot 1 of scanline 0.
+	JSR ClockslideFromWord        ; stall 447 CPU cycles.
+	.word 447                     ; ^
+	LDA #0                        ; A value of 0 to disable rendering.
+	STA $2001                     ; this instruction begins on scanline 3, dot 325. Accounting for the delay, rendering should be disabled around dot 334 or 335.
+	JSR Clockslide_50             ; stall a while so HBlank can end.
+	LDA #$1E                      ; A value of $1E to enable both sprites and the background, including the 8 pixels on the left edge of the screen.
+	STA $2001                     ; this instruction begins on scanline 4, dot 152. Accounting for the delay, rendering should be enabled around dot 161 or 162.
+	
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
+	BEQ FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit did NOT occur this time.
+	
+	INC <ErrorCode
+
+
+	;;; Test 6 [Stale Sprite Shift Registers]: Can a sprite at X=$FF trigger a sprite zero hit by preventing the shifter from reloading during HBlank? ;;;
+	; Disabling rendering on dot 257 (or 258 depending on clock alignment) will prevent the sprite shifters from being reloaded.
+	; Sprite zero's shifter was never fully shifted, and will stop shifting during HBlank.
+	; So if we re-enable rendering during the ppu idle period, we can shift the rest of sprite zero's shifter on the following scanline to trigger the sprite zero hit.
+
+	; When we run this test, the sprite counter will be set up with $FF.
+	; Then every visible ppu cycle, this counter is decremented until 0 where the sprite is drawn and the sprite shifter will begin shifting.
+	; This results in a single pixel drawn at X=$FF for sprite zero.
+	; Since the sprite shifters do not shift while rendering is disabled (or blanked) they stop shifting during HBlank.
+	; Then we disable rendering until the ppu idle period, skipping the re-initialization of the counter.
+	; Since the counter is still zero, and the shift register still has contents, the sprite will be drawn immediately as soon as rendering is re-enabled.
+	; Rendering will be enabled before dot 339, but since sprite zero's shifter counter is already at zero, it will just be set to halted mode again, and immediately draw the sprite on the first pixel.
+
+	JSR Sync_ToLine0Dot1          ; sync the CPU to dot 1 of scanline 0.
+	JSR ClockslideFromWord        ; stall 535 CPU cycles.
+	.word 535                     ; ^
+	LDA #0                        ; A value of 0 to disable rendering.
+	STA $2001                     ; this instruction begins on scanline 4, dot 248. Accounting for the delay, rendering should be disabled around dot 258 or 259.
+	LDA #$1E                      ; A value of $1E to enable both sprites and the background, including the 8 pixels on the left edge of the screen.
+	JSR Clockslide_20             ; stall 17 CPU cycles to wait for the end of HBlank.
+	STA $2001                     ; this instruction begins on scanline 4, dot 326. Accounting for the delay, rendering should be enabled around dot 336 or 337.
+	JSR WaitForVBLSpriteZeroHit   ; Wait for vblank and load A with $2002.6
+	BEQ FAIL_StaleSpriteShiftRegs ; Fail the test if a sprite zero hit did NOT occur this time.
+
+	;; END OF TEST ;;	
+
+	LDA #1
+	RTS
+;;;;;;;
+
+
+FAIL_StaleSpriteShiftRegs:
+	JMP TEST_Fail
 
 	.bank 1
 	.org $A000	; This next line of code is located at address $A000 in the ROM.
@@ -3019,13 +3340,13 @@ TEST_OpenBus_PrepIRQLoop:
 
 	NOP
 	NOP ; I need address $A0A0 to be something very specific (in order to prevent an incorrect emulation from crashing), so I'm adding some NOPs here.
-	BNE TEST_OpenBus_ContinueTest4 ; Skip to TEST_OpenBus_ContinueTest4
+	BNE TEST_OpenBus_ContinueTest5 ; Skip to TEST_OpenBus_ContinueTest4
 	;; If you are reading this for test 4, just ignore these next few lines. ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 TEST_OpenBusA0A0:              ; This is a fail-safe for test 8. It needed to be at address $A0A0.	         ;;
 	SEI						   ; The RTI instruction pulled off some junk and we need to re-set the i flag.  ;;
 	LDX #1                     ; X=1, which is used to tell test 8 that it failed.                           ;;
 	JMP TEST_OpenBus_PostTest8 ; Jump to the end of test 8.                                                  ;;
-TEST_OpenBus_ContinueTest4:    ; Anyway, that was the greatest crime against programming I've ever committed.;;
+TEST_OpenBus_ContinueTest5:    ; Anyway, that was the greatest crime against programming I've ever committed.;;
 	;; And now, back to your regularly scheduled program. ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 	
 	LDA $3FFF,X
@@ -3350,7 +3671,6 @@ TEST_PPU_Open_Bus:
 	; Here's how PPU Open bus works.
 	; The PPU data bus is updated whenever the CPU writes to any PPU Register.
 	
-	JSR ClearPage2
 	LDA #2
 	STA $4014
 	
@@ -3427,39 +3747,51 @@ TEST_PPU_Open_Bus:
 	INC <ErrorCode 
 	
 	;;; Test 3 [PPU Open Bus]: Address $2002, bits 0 through 4 are open bus ;;;
-	LDA $2002
-	LDA #$15
-	STA $2006
-	LDA $2002
-	AND #$1F
-	CMP #$15
-	BNE TEST_FailPPUOpenBus2
+	LDA $2002                ; reset the ppu's w latch. (not entirely needed, but good practice to do this before a write to $2006)
+	LDA #$15                 ; A = $15
+	STA $2006                ; The ppu data bus is now $15 (%0001 1001)
+	LDA $2002                ; reading from $2002 only affects the upper 3 bits of the ppu data bus, so you will see the previous contents of bits 0 through 4. (%xxx1 1001)
+	AND #$1F                 ; Mask away the upper 3 bits. (%0001 1001)
+	CMP #$15                 ; Since reading from $2002 gives you the ppu's open bus data for bits 0 through 4, we should see that A = $15.
+	BNE TEST_FailPPUOpenBus2 ; Otherwise, fail the test.
 	INC <ErrorCode 
 	JSR ResetScroll
 	
 	;;; Test 4 [PPU Open Bus]: The upper 3 bits of the PPU data bus is updated by reads of $2002. ;;;
-	JSR WaitForVBlank ; this clears the vblank flag.
-	LDA #$FF
-	STA $2002
-	LDA $2002
-	LDA $2000
-	CMP #$1F
-	BNE TEST_FailPPUOpenBus2
+	JSR WaitForVBlank        ; this clears the vblank flag.
+	LDA #$FF                 ; A = $FF
+	STA $2002                ; The ppu data bus = $FF
+	LDA $2002                ; Reading $2002 only updates the upper 3 bits of the ppu open bus. (the upper 3 bits are all zero in this instance)
+	LDA $2000                ; Read a write-only register to get the ppu open bus value. (%0001 1111)
+	CMP #$1F                 ; Check if A = $1F.
+	BNE TEST_FailPPUOpenBus2 ; Otherwise, fail the test.
 
 	LDA <$50	; This value will be $00 if you are running [PPU Open Bus], but $01 if you are running [Dummy Write Cycles], which re-runs this test to verify the ppu bus works as a prerequisite.
+	            ; We don't need to check if the ppu open bus decays for that test, so we can skip that.
 	BNE TEST_PPU_Open_Bus_SkipDecayTest
+	INC <ErrorCode 
+
 	
 	;;; Test 5 [PPU Open Bus]: The PPU data bus decays. ;;;
+	; Since having bits decay is analogue behavior, you're probably going to need to "fake" this.
+	; To make a long story short, if nothing updates the PPU Data bus, then the bits *eventually* decay to 0's.
+	; Emphasis on *eventually* because that's the inconsistent part on real hardware.
+	; There's no "logic" determining how long the bits should persist before decaying on real hardware, and this test is known to fail on hardware briefly after powering on the console.
+	; - The bits tend to decay faster the warmer the PPU is, though I'm not checking for that here.
+	; There's multiple ways to emulate this behavior, but I recommend making your implementation deterministic, rather than throwing random numbers around. (or at least make the RNG seeded?)
+	;
+	; I think the simplest approach is to give each bit of the ppu data bus an integer that ticks down every ppu cycle.
+	; Then whenever any bits of the ppu data bus are updated, you initialize the integer for that bit with *some constant* (or add randomness if you prefer.)
+	; - since this is analogue behavior, there is no "canoncial" value for what you should initialize the integer with, though I recommend it takes somewhere between 5 and 30 frames to hit 0.
 	LDA #$FF
-	STA $2002
-	LDX #120
-TEST_PPU_Open_Bus_120FrameStall:; wait approximately two seconds.
-	JSR Clockslide_29780	
-	DEX
-	BNE TEST_PPU_Open_Bus_120FrameStall
-	LDA $2000
-	BNE TEST_FailPPUOpenBus2
-	INC <ErrorCode 
+	STA $2002                           ; Load the ppu data bus with $FF. (all bits set.)
+	LDX #120                            ; X = 120
+TEST_PPU_Open_Bus_120FrameStall:        ; wait approximately two seconds.
+	JSR Clockslide_29780	            ; stall for approximately 1 frame.
+	DEX                                 ; Decrement X
+	BNE TEST_PPU_Open_Bus_120FrameStall ; Loop until X = 0;
+	LDA $2000                           ; Read a write-only register to get the ppu open bus value. It should be all zeroes, as there was more than enough time for all the bits to decay.
+	BNE TEST_FailPPUOpenBus2            ; If any bits are still set, fail the test.
 
 	;; END OF TEST ;;
 TEST_PPU_Open_Bus_SkipDecayTest:
@@ -4910,6 +5242,9 @@ TEST_SHA_9F_CorrectLength:
 	; Behavior 2: Hi = ($1E+1) & $AA = 0A	        :: write ($1E+1) & $55 & ($AA | MAGIC) = ?? & $1F (we don't know what MAGIC is, but the result must be $1F or less)
 	; Behavior 3: Hi = ($1E+1) & ($55 & MAGIC) = ??	:: write ($1E+1) & $55 & ($AA | MAGIC) = ?? & $1F (we don't know what MAGIC is, but the result must be $1F or less)
 	; Behavior 4: Hi = ($1E+1) & ($55 | $AA) = 1F   :: write ($1E+1) & $55 & ($AA | MAGIC) = ?? & $1F (we don't know what MAGIC is, but the result must be $1F or less)
+	;		"MAGIC" has been seen to be 00, F5, F9, FA, and FF. Probably other values too.
+
+	
 	JSR CopyLowestPageBytesTo60
 	LDA $0A00
 	CMP #$FF
@@ -4928,17 +5263,7 @@ TEST_SHA_Behavior2_9F_JMP:
 	JMP TEST_SHA_Behavior2_9F
 TEST_SHA_Behavior1_9F_JMP:
 	JMP TEST_SHA_Behavior1_9F
-	
-	; So there are 2 different behaviors you can expect here.
-	; H is the high byte of the address bus before indexing, +1
-	; 1. Write: A & X & H
-	; 2. Write: A & (X | Magic) & H :: *Magic CAN CHANGE!
-	;		Magic has been seen to be 00, F5, F9, FA, and FF.
-	
-	; When the Y register is used as an offset and causes the high byte to change, the high byte becomes "unstable".
-	; The behavior here IS correlated to the other set of behaviors.
-	; 1. Hi = Hi & A & X
-	; 2. Hi = Hi & X
+
 TEST_SHA_Behavior1_93:
 	LDA #$93
 	PHA
@@ -5629,7 +5954,7 @@ TEST_ARR_6B:
 	.byte $EE, $64, $45, (flag_i | flag_z | flag_v)
 	.byte $71, $64, $45, (flag_i | flag_c)
 	; ARR ;
-	; Bitwise AND with A then Rotate A and check bits
+	; Bitwise AND with A then Rotate A Right and check bits
 	; Negative flag = bit 7
 	; Carry flag = bit 6
 	; Overflow flag = bit 5 XOR bit 6
@@ -5659,7 +5984,7 @@ TEST_ANE_8B:
 	; ANE ;
 	; A = (((A | Magic) & X) & Immediate)
 	; The "Magic" value is not consistent, and so this test cannot rely on any specific value.
-	; It is possible to test and see what this value is, but it could be different between tests.
+	; It is possible to test and see what this value is, but it could be different between instances of running the test.
 	; Because of this, the tests used here need to specifically verify behavior only in cases where the magic value does not alter the outcome.
 	; Basically, unless Immediate is $00, or A is $FF, the outcome is not guaranteed.
 	
@@ -6137,10 +6462,17 @@ TEST_NMI_Control:
 	BNE FAIL_NMI_Control2
 	INC <ErrorCode
 	
-	;;; Test 8 [NMI Control]: The NMI should occur 2 instructions after the NMI is enabled. ;;;
+	;;; Test 8 [NMI Control]: The NMI is polled before the write cycle of STA. ;;;
+	; This means that there is a gap between enabling the NMI and the NMI occuring:
+	
 	; STA $2000
 	; LDX #$10
 	; [NMI]	
+	
+	; In this example, the interrupt is polled before the write cycle of STA. (the NMI was not yet enabled)
+	; Then the NMI was enabled when the interrupt is polled during `LDX #$10`
+	; Therefore, the NMI occurs after the LDX, instead of immediately after the STA.
+	
 	JSR DisableNMI
 	LDX #0
 	JSR WaitForVBlank
@@ -6152,7 +6484,23 @@ TEST_NMI_Control:
 	STA $2000
 	LDX #$10
 	CPX #$11
-	BNE FAIL_NMI_Control2	; If the NMI happened before the LDA #$10 (incorrect), then X will be 1, thus failing the test.
+	BNE FAIL_NMI_Control2	; If the NMI happened before the LDX #$10 (incorrect), then X will be $11, thus failing the test.
+	INC <ErrorCode
+
+	;;; Test 9 [NMI Control]: The NMI is polled between wrice cycles of a read-modify-write instruction. ;;;
+
+	JSR DisableNMI
+	LDX #0
+	JSR WaitForVBlank
+	JSR Clockslide_29780 ; Wait 1 frame.
+	; Instead of using JSR EnableNMI, I need to actually write it all out here.
+	LDA <PPUCTRL_COPY
+	STA $2002 ; prepare the PPU Open Bus
+	INC $2000
+	LDX #$10
+	CPX #$11
+	BEQ FAIL_NMI_Control2	; If the NMI happened after the LDX #$10 (incorrect), then X will be $10, thus failing the test.
+	
 	;; END OF TEST ;;
 	JSR DisableNMI
 	LDA #1
@@ -6687,8 +7035,8 @@ TEST_ArbitrarySpriteZero:
 	BEQ FAIL_ArbitrarySpriteZero1
 	LDX #1
 TEST_ArbitrarySpriteZeroLoop:
-	JSR WaitForVBlank
 	JSR ClearPage2
+	JSR WaitForVBlank
 	JSR InitializeSpriteX
 	;    YPos, CHR, Att, XPos
 	.byte $00, $FC, $00, $08
@@ -7023,8 +7371,6 @@ TEST_MisalignedOAM_Behavior:
 	; If the value read as the Y position *is* in range, just add 1 to the OAM address.
 	; If the value read as the Y position is *not* in range, just add 4 to the OAM address and bitwise AND the OAM address with $FC.
 	
-	; Before this test, let's clear page 2 (with $FFs).
-	JSR ClearPage2
 	; Copy data from a look up table to address $280
 	LDX #0
 TEST_MisalignedOAM_P4_Y_1_Loop:
@@ -7408,7 +7754,7 @@ Address2004_PreRevisionG:
 	JSR Print_PreRevGBehavior
 	JSR PrintTextCentered
 	.word $2370
-	.byte " Missing reads from $2004.", $FF
+	.byte "    Missing reads from $2004.   ", $FF
 Address2004_PreRevG_SkipMSG:
 	LDA #$39 ; Success code "E", referring to a pre revision G ppu.
 	RTS
@@ -7418,7 +7764,6 @@ FAIL_Address2004_PreRevG:
 	JMP Address2004_PreRevisionG ; too far to branch.
 
 FAIL_Address2004_Behavior:
-	JSR ClearPage2
 	JSR WaitForVBlank
 	LDA #2
 	STA $4014
@@ -7432,7 +7777,6 @@ TEST_Address2004_Behavior:
 	JSR PrintCHR	; Put a white square at $2001 on the nametable.
 	.word $2001
 	.byte $FC, $FF	
-	JSR ClearPage2
 	JSR ResetScrollAndWaitForVBlank
 	LDA #2
 	STA $4014 ; run the OAM DMA, overwriting the whole thing with $FF
@@ -7633,7 +7977,6 @@ TEST_Address2004_Behavior_loop:			; Set up page 2 so every value is essentially 
 
 	;; END OF TEST ;;
 	JSR ClearOverscanNametable
-	JSR ClearPage2
 	JSR WaitForVBlank
 	LDA #2
 	STA $4014
@@ -7697,7 +8040,10 @@ TEST_APURegActivation:
 	STX $2003
 	LDA #$5A
 	STA $2004
-	STX $2003
+	TXA
+	LDX #1
+	STA $2002
+	STA $2002, X ; safely write to $2003 without the risk of OAM Corruption.
 	LDA #$A5
 	STA $2002
 	TXA
@@ -7795,10 +8141,10 @@ APURegActivation_Continue:
 	;
 	;      00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F
 	;    ┌─────────────────────────────────────────────────┐
-	; 00 │ 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 │ ; The value of $40 is left over from the data bus.
-	; 10 │ 40 40 40 40 40 44 41 40 40 40 40 40 40 40 40 40 │ ; The $40's are the left over data bus. The value of $44 is the frame interrupt flag + the triangle channel from reading address $4015 (APU Status).
+	; 00 │ 50 50 40 50 50 50 40 50 50 50 40 50 50 50 40 50 │ ; The value of $50 is left over from the data bus. The attribute bytes from OAM are missing bit 4 though, so they are read back as $40.
+	; 10 │ 50 50 40 50 50 44 41 40 40 40 40 40 40 40 40 40 │ ; The $40's are the left over data bus. The value of $44 is the frame interrupt flag + the triangle channel from reading address $4015 (APU Status).
 	; 20 │ 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 │ ; Referring to the above line, the $41 is open bus + reading controller 1, and $40 is open bus + controller 2. (this line is just open bus)
-	; 30 │ 40 40 40 40 40 04 01 00 00 00 00 00 00 00 00 00 │ ; This time, the frame interrupt flag is cleared, which clears bit 4 of open bus in future reads. The $01 is just controller 1. Controller 2 is still $00.
+	; 30 │ 40 40 40 40 40 04 01 00 00 00 00 00 00 00 00 00 │ ; This time, the frame interrupt flag is cleared, which clears bit 6 of open bus in future reads. The $01 is just controller 1. Controller 2 is still $00.
 	; 40 │ 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 │ ; All zeroes. Just open bus.
 	; 50 │ 00 00 00 00 00 04 01 00 00 00 00 00 00 00 00 00 │ ; Just the triangle playing with APU STATUS, and controller 1 being $01, which will never change. Controller 2 is still $00, and will never change.
 	; 60 │ 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 │
@@ -7849,9 +8195,9 @@ APURegActivation_Continue:
 	LDX #0 	 ; If (instead of BRK) you run: ORA <$01, X...
 	LDA #$60 ; This value of $60 will be put on the data bus. an RTS instruction!
 	STA <$01 ; And since the BRK jumps to a function loading the value of A with $A9, we can check for this after the test.
-	
+		
 	; Step 7: Schedule a DMA
-	LDA #$40
+	LDA #$50
 	JSR DMASyncWith40
 	; We have 50 CPU cycles until the DMA occurs.
 	; JSR takes 6 cycles, we want the DMA to occur 3 cycles after that. We need to stall for 41 CPU cycles
@@ -7875,11 +8221,16 @@ TEST_APURegActivation_Test5Loop:
 	BNE TEST_APURegActivation_Test5Loop
 	; Instead of making a 256 byte large look up table, I'm going to check each row individually. The result should match that table printed out above in the Test 4 description.
 	; X already equals zero.
+	LDY #0
 TEST_APURegActivation_Eval_0:		;
 	LDA $500,X						; Read the value copied from OAM
-	CMP #$40						; This row should be all $40's
-	BNE FAIL_APURegActivation		; If it's not $40, you fail
-	INX								; If it IS $40, check the next one.
+	CMP TEST_APURegActivation_E0Key, Y; This row should be a pattern of 50 50 40 50
+	BNE FAIL_APURegActivation		; If it's not a match, you fail
+	INY								; INY for the key here.
+	TYA								; clamp Y to 0 through 3
+	AND #3							; ^
+	TAY								; ^
+	INX								; If it IS a match, check the next one.
 	CPX #$15						; Loop this through address $214
 	BNE TEST_APURegActivation_Eval_0;
 	LDA $500,X						; Read the value copied from OAM at $215
@@ -7935,11 +8286,14 @@ FAIL_APURegActivation:
 	STA $4015
 	JMP TEST_Fail
 ;;;;;;;;;;;;;;;;;
-		
+
+TEST_APURegActivation_E0Key:
+	.byte $50, $50, $40, $50
+
+
 TEST_APURegActivation_Continue:
 	;;; Test 7 [APU Register Activation]: If the APU registers are active, there will be bus conflicts if the OAM DMA is reading from outside of open bus. ;;;
-	; The setup here is incredibly similar, except the OAM DMA will occur on page 2 instead, after clearing page 2 to all FFs.
-	; Also we're going to write a value of $00 to $2FF to populate the data bus with $00 before the OAM ends.
+	; The setup here is incredibly similar, except the OAM DMA will occur on page 2 instead, after clearing page 2 to be 50% FFs and 50% 00s.
 	;
 	; Here's how OAM should end up after this test:
 	;
@@ -7963,12 +8317,12 @@ TEST_APURegActivation_Continue:
 	; F0 │ 00 00 00 00 00 04 00 00 00 00 00 00 00 00 00 00 │ 
 	;    └─────────────────────────────────────────────────┘
 	;
-	; Most amusingly, it looks like $4015 is read, but $4016 and $4017 aren't visible in this chart. (But don't let that fool you, as the controllers are still getting clocked)
+	; Most amusingly, it looks like $4015 is read, but $4016 and $4017 aren't visible in this chart. (But don't let that fool you, as the controllers are still getting clocked... on some consoles.)
 	
-	JSR ClearPage2
+	JSR ClearPage2 ; This sets address $200 through $2FF to the value #$FF.
 	LDX #$80
 	LDA #0
-TEST_APURegActivation_Prep6Loop:
+TEST_APURegActivation_Prep6Loop: ; And this loop makes address $280 through $2FF the value #$00
 	STA $200, X
 	INX 
 	BNE TEST_APURegActivation_Prep6Loop
@@ -8022,7 +8376,7 @@ TEST_APURegActivation_Eval_3:
 	BPL TEST_APURegActivation_Skip0601
 	LDA $500,X						; Read the value copied from OAM at $2_5
 	CMP #$24						; This should be 24
-	BNE FAIL_APURegActivation		; If it's not $24, you fail
+	BNE FAIL_APURegActivation2		; If it's not $24, you fail
 	INX								; Increment X for the next one.
 	LDA $500,X						; Read the value copied from OAM at $2_6
 	CMP #$E3						; This should be E3
@@ -8081,7 +8435,7 @@ TEST_APURegActivation_Eval_4:
 	LDY #03							; It probably should have been INY's for neatness, but this saves 2 CPU cycles.
 TEST_APURegActivation_Skip0602:
 	LDA $200,X						; Read the value copied from OAM
-	BNE FAIL_APURegActivation2		; If it's not $00, you fail
+	BNE FAIL_APURegActivation2; If it's not $00, you fail
 	INY								; Increment Y for the next one.
 	CPY #$20
 	BNE TEST_APURegActivation_YSkip3	; if Y=20, reset to 0, so we can check for the "$04 $01"
@@ -8143,41 +8497,6 @@ TEST_DMA_Plus_4015R:
 	RTS
 ;;;;;;;
 
-TEST_APURegActivation_Finale:
-	LDA #0
-	STA $4015
-	; The controller ports might not have been visible by the OAM DMA, but did the controller ports get clocked?
-	; This used to be an error code, but different consoles behave differently, so let's just print if it did or not.
-	LDA #0
-	STA <dontSetPointer ; prep this, since we're drawing stuff.
-	LDA $4016
-	LDA $4016	; it is assumed the B button is not pressed during the test.
-	LSR A
-	BCS TEST_APURegActivation_ConflictClocked	
-	; And the controller ports were NOT clocked here!
-	LDA <RunningAllTests
-	BNE TEST_APURegActivation_Res1
-	JSR PrintTextCentered
-	.word $2350
-	.byte "OAM DMA Bus Conflict no Clock", $FF
-	JSR ResetScroll
-TEST_APURegActivation_Res1:
-	LDA #5 ; Success Code 1
-	RTS
-	
-TEST_APURegActivation_ConflictClocked:
-	; Bingo! Look at that. The controller ports *were* clocked, but did not appear in OAM!
-	LDA <RunningAllTests
-	BNE TEST_APURegActivation_Res2
-	JSR PrintTextCentered
-	.word $2350
-	.byte "OAM DMA Bus Conflict Clocks", $FF
-	JSR ResetScroll
-TEST_APURegActivation_Res2:
-	LDA #9 ; Success Code 2
-	RTS
-;;;;;;;
-
 TEST_DMA_Plus_4016R:
 	;;; Test 1 [DMA + $4016 Read]: Does the DMA Update the read-sensitive controller port? (also doubles as a test for DMA timing) ;;;
 	
@@ -8219,13 +8538,7 @@ TEST_DMA_Plus_4016R_Loop:
 TEST_DMA_Plus_4016R_SkipText1:
 	LDA #5 ; Success code 1. NES / AV Famicom.
 	RTS
-;;;;;;;
-	; It's a bit silly putting the new bank right here in the middle of this test, but hey- we can branch around this audio sample...
-	.bank 2	; If I don't do this, the ROM won't compile.
-	.org $C000
-	; and 33 00s in a row for a nice and neat silent DPCM sample.
-	.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
-
+	
 DMA_Plus_4016R_TryFamicomControllerBehavior:
 	LDA <$51
 	ORA #7
@@ -8245,10 +8558,15 @@ TEST_DMA_Plus_4016R_SkipText2:
 	LDA #9 ; Success code 2. Famicom.
 	RTS
 ;;;;;;;
+	FAIL_DMA_Plus_4016R:
+	JMP TEST_Fail
 
+;;;;;;;
+	.bank 2	; If I don't do this, the ROM won't compile.
+	.org $C000
+	; and 33 00s in a row for a nice and neat silent DPCM sample.
+	.byte $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00, $00
 
-
-FAIL_DMA_Plus_4016R:
 FAIL_ControllerStrobing:
 	JMP TEST_Fail
 	
@@ -8287,10 +8605,11 @@ TEST_ControllerStrobing:
 	;
 	; This results in a 1-cycle strobe of the controller ports!
 	; - if that 1-cycle strobe happens on a get cycle, the controllers actually aren't strobed at all! (See the next error code)
+	; - But if the strobe occurs on a put cycle, the controllers DO get strobed.
 	JSR WaitForVBlank
 	LDA #2
-	STA $4014 ; sync CPU with put cycle.
-	DEC $4016 ; this should strobe the controller.
+	STA $4014 ; sync CPU with "get" cycle.
+	DEC $4016 ; (get) (put) (get) (put) (get) [PUT] [GET] : this should strobe the controller.
 	JSR ReadControllerInto50_and_A
 	AND #$7F
 	BNE FAIL_ControllerStrobing	; the result should be $00
@@ -8300,9 +8619,9 @@ TEST_ControllerStrobing:
 	; This results in a 1-cycle strobe of the controller ports, however they actually aren't strobed at all!
 	JSR WaitForVBlank
 	LDA #2
-	STA $4014 ; sync CPU with put cycle.
-	LDA <$00  ; 3 CPU cycles.
-	DEC $4016 ; this should not strobe the controller.
+	STA $4014 ; sync CPU with "get" cycle.
+	LDA <$00  ; (get) (put) (get) 3 CPU cycles.
+	DEC $4016 ; (put) (get) (put) (get) (put) [GET] [PUT] this should not strobe the controller.
 	JSR ReadControllerInto50_and_A
 	CMP #$FF
 	BNE FAIL_ControllerStrobing	; the result should be $FF
@@ -10978,7 +11297,54 @@ FAIL_DMC_Conflicts1:
 	JMP FAIL_AndDisableAudioChannels
 ;;;;;;;;;;;;;;;;;
 
+TEST_VblankSync_PreTest:
+	; This runs almost immediately after power on, in order to check if the VBlank Sync routine won't loop infinitely.
+	LDA $2002
+	BPL TEST_VblankSync_PreTest
+	; We are now in VBlank, but there's a large window in which this could have occurred.
+	; LDA [Read Opcode] [Read Operand] [Read Operand] * [Read $2002]
+	; BPL [Read Opcode] [Read Operand] [Dummy Read, move PC]
+	; A 7 CPU cycle window is a bit large.
+	; At the moment we execute this code, all we know is that the VBlank flag was set between 3 and 10 CPU cycles ago.
+	; So the VBlank flag will be set between 29770.66 and 29777.66 CPU cycles.
+	; With rendering disabled, every 29781 CPU cycles will "fall back" 1 PPU cycle.
+	; The plan: Read $2002 in exactly 29770 CPU cycles. (0.66 CPU cycles too early.)
+	; Then, stall for 29781 CPU cycles, and read $2002 again.
+	; This will take a minimum of 3 frames to exit, and a maximum of 24 frames.
+	; If it takes longer than 24 frames, it can be assumed the frame timing has the wrong number of CPU/PPU cycles, and could never use my VBlank sync routines.
+	LDX #0 ; +2 cycles.
+	JSR ClockslideFromWord
+	.word 29765
+TEST_VblSyncPreTest_Loop:
+	LDA $2002	;+3 [VBlank happens here?] +1
+	BMI TEST_VblSyncPreTest_GoodEnding; +2
+	INX; +2
+	CPX #25 ; +2
+	BEQ TEST_VblSyncPreTest_BadEnding ; +2
+	JSR ClockslideFromWord
+	.word 29766
+	JMP TEST_VblSyncPreTest_Loop;+3
+	
+TEST_VblSyncPreTest_GoodEnding:
+	LDA #1
+	STA <result_VblankSync_PreTest
+	RTS
+TEST_VblSyncPreTest_BadEnding:
+	LDA #$80	; I use $80 so my VBL sync routine can start by running `LDA <result_VblankSync_PreTest` `BMI FAIL`
+	STA <result_VblankSync_PreTest
+	RTS
+;;;;;;;
+
 TEST_DMABusConflict:
+	
+	; NOTE:
+	; The bus conflict with the DMC DMA has two halves.
+	; - The value the CPU reads.
+	; - The value that the DMC DMA reloads the shift counter with.
+	; These values are different, and this test can only check for the value the CPU sees.
+	; In fact, the only way I would be able to check for the value going into the APU shift register would be with the CPU Revision G pin 30 "CPU Test Mode" stuff.
+	; - Since this requires modified hardware, I'm not making a test for that in this ROM. Perhaps a future ROM though...
+
 	; A very similar test to [APU Register Activation]. In fact, I highly suggest you pass that test before looking into this one, as it's slightly more complicated.
 	; As a recap, when the 6502 address bus is in the range $4000 to $401F, the APU registers are active (including mirrors of them.)
 	; Except the registers aren't just active from $4000 to $40FF. They are active everywhere. Every $20 bytes across the entire address space will be mirrors of the APU registers.
@@ -11150,44 +11516,6 @@ TEST_DMC_Test3:
 FAIL_DMC_Conflicts:
 	JMP FAIL_AndDisableAudioChannels
 ;;;;;;;;;;;;;;;;;
-	
-TEST_VblankSync_PreTest:
-	; This runs almost immediately after power on, in order to check if the VBlank Sync routine won't loop infinitely.
-	LDA $2002
-	BPL TEST_VblankSync_PreTest
-	; We are now in VBlank, but there's a large window in which this could have occurred.
-	; LDA [Read Opcode] [Read Operand] [Read Operand] * [Read $2002]
-	; BPL [Read Opcode] [Read Operand] [Dummy Read, move PC]
-	; A 7 CPU cycle window is a bit large.
-	; At the moment we execute this code, all we know is that the VBlank flag was set between 3 and 10 CPU cycles ago.
-	; So the VBlank flag will be set between 29770.66 and 29777.66 CPU cycles.
-	; With rendering disabled, every 29781 CPU cycles will "fall back" 1 PPU cycle.
-	; The plan: Read $2002 in exactly 29770 CPU cycles. (0.66 CPU cycles too early.)
-	; Then, stall for 29781 CPU cycles, and read $2002 again.
-	; This will take a minimum of 3 frames to exit, and a maximum of 24 frames.
-	; If it takes longer than 24 frames, it can be assumed the frame timing has the wrong number of CPU/PPU cycles, and could never use my VBlank sync routines.
-	LDX #0 ; +2 cycles.
-	JSR ClockslideFromWord
-	.word 29765
-TEST_VblSyncPreTest_Loop:
-	LDA $2002	;+3 [VBlank happens here?] +1
-	BMI TEST_VblSyncPreTest_GoodEnding; +2
-	INX; +2
-	CPX #25 ; +2
-	BEQ TEST_VblSyncPreTest_BadEnding ; +2
-	JSR ClockslideFromWord
-	.word 29766
-	JMP TEST_VblSyncPreTest_Loop;+3
-	
-TEST_VblSyncPreTest_GoodEnding:
-	LDA #1
-	STA <result_VblankSync_PreTest
-	RTS
-TEST_VblSyncPreTest_BadEnding:
-	LDA #$80	; I use $80 so my VBL sync routine can start by running `LDA <result_VblankSync_PreTest` `BMI FAIL`
-	STA <result_VblankSync_PreTest
-	RTS
-;;;;;;;
 
 TEST_ImpliedDummyRead_BRKed:
 	; This is where the PC *should* go after reading an opcode from $4015.
@@ -11252,7 +11580,7 @@ TEST_ImpliedDummyRead_BRKed5:
 	STA <$60	; write to $51. $50 currently has the backup of address $A5 in it.
 	JMP TEST_ImpliedDummyRead_Post5
 	
-	TEST_ImpliedDummyRead_BRKed6:
+TEST_ImpliedDummyRead_BRKed6:
 	; This is where the PC *should* go after reading an opcode from $4015 during the third loop of tests.
 	PLA
 	; Check if we ran a BRK or if this was an IRQ.
@@ -11662,7 +11990,7 @@ TEST_ImpliedDummyRead_Continue2:
 	; PLA [Pull off A6] [also dummy read.] (4 cycles)
 	; LDX <$A6 [Read opcode] [Read operand] [read address $A6, Data bus = $A5.] (3)
 	; LDA <$A5 [Read opcode] [Read operand] [read address $A5, Data bus = the opcode of the instruction we want to test.] (3)
-	; PHA [Read Opcode] [Dummy Read $4015 (This should clear the Frame Counter interrupt.)] [Push A ($48) to stack]
+	; PHP [Read Opcode] [Dummy Read $4015 (This should clear the Frame Counter interrupt.)] [Push Processor ($3C) to stack]
 	; [Read opcode from $4015. Hopefully, a JSR.]
 	;
 	; and hopefully the BRK takes you to TEST_ImpliedDummyRead_BRKed3, which sets $60 and jumps to TEST_ImpliedDummyRead_PostPHP.
@@ -12347,6 +12675,7 @@ TEST_BFlag_BRK:
 	INC <ErrorCode
 	
 	;;; Test 3 [The B Flag]: This emulator should be capable of running an IRQ before I run an IRQ test. ;;;
+	LDA $4015 ; acknowledge any pending IRQs. (there shouldn't be one yet.)
 	LDA #LOW(TEST_BFlag_BRK2)
 	STA $601
 	LDA #HIGH(TEST_BFlag_BRK2)
@@ -12656,7 +12985,6 @@ TEST_DMCDMAPlusOAMDMA:
 	;
 	; see https://www.nesdev.org/wiki/DMA#DMC_DMA_during_OAM_DMA
 	
-	JSR ClearPage2
 	LDX #0
 	
 	; If you fail this test, look around address $50 through $6F to see what your emulator is doing, and compare with the answer key below.
@@ -12759,7 +13087,6 @@ TEST_ExplicitDMAAbort:
 	CPY #4 ; 
 	BNE FAIL_ExplicitDMAAbort
 
-	JSR ClearPage2
 	LDX #0
 	
 	; The explicit abort test is all about what happens to the DMC DMA if the DMC is disabled while the DMA is occurring.
@@ -12832,7 +13159,6 @@ TEST_ImplicitDMAAbort:
 	BNE FAIL_ImplicitDMAAbort
 	INC <ErrorCode
 
-	JSR ClearPage2
 	LDX #0
 	
 	; The implicit abort test is all about what happens if the reload DMA occurs very briefly after a load DMA on a 1-byte sample with looping disabled.
@@ -13708,12 +14034,12 @@ TEST_OAM_Corruption:
 	CMP #1
 	BNE FAIL_OAM_Corruption
 	; also you can read from OAM. that's important.
-	LDX #0
-	STX $2003
 	LDA #$5A
-	STA $2004
-	LDA #0
-	STX $2003
+	STA $2004 ; OAMADDR will be zero.
+	TXA
+	LDX #1
+	STA $2002
+	STA $2002, X ; safely write to $2003 without the risk of OAM corruption... a bit ironic considering the test we're running.
 	LDA #$A5
 	STA $2002
 	LDA $2004
@@ -13992,6 +14318,8 @@ TEST_AllNops_Evaluate:	; This just checks a bunch of variables to make sure the 
 	TSX
 	INX
 	INX
+	INX
+	INX
 	CPX <Copy_SP
 	.byte $F0, $03 ; BEQ +3 bytes
 	JMP TEST_AllNops_Evaluate_SP
@@ -14023,6 +14351,8 @@ TEST_AllNops_EvaluateAbsolute: ; This does the same thing as TEST_AllNops_Evalua
 	TSX
 	INX
 	INX
+	INX
+	INX
 	CPX <Copy_SP
 	.byte $F0, $03 ; BEQ +3 bytes
 	JMP TEST_AllNops_Evaluate_SP
@@ -14035,12 +14365,17 @@ TEST_AllNops_EvaluateAbsolute: ; This does the same thing as TEST_AllNops_Evalua
 	RTS
 ;;;;;;;
 
-TEST_AllNops_Evaluate_Flags: 				; If this is executed, NOP updated the CPU status flags.
-	LDA <RunningAllTests
-	BNE TEST_AllNops_Evaluate_Flags_Skip 	; Skip drawing to the screen if this is running for the all-test-menu.
+SetPointerAndWaitForVBlank:
 	LDA #0
 	STA <dontSetPointer						; make sure the PrintTextCentered uses 2 bytes to the value of the v register.
 	JSR WaitForVBlank						; Wait for VBlank so we're not updating the nametable out of VBlank.
+	RTS
+;;;;;;;
+
+TEST_AllNops_Evaluate_Flags: 				; If this is executed, NOP updated the CPU status flags.
+	LDA <RunningAllTests
+	BNE TEST_AllNops_Evaluate_Flags_Skip 	; Skip drawing to the screen if this is running for the all-test-menu.
+	JSR SetPointerAndWaitForVBlank
 	JSR PrintTextCentered 					; And write the following message to address $2370.
 	.word $2370
 	.byte "NOP modified flags.", $FF
@@ -14052,9 +14387,7 @@ TEST_AllNops_Evaluate_Flags_Skip:
 TEST_AllNops_Evaluate_Memory: 				; If this is executed, NOP updated a value in RAM.
 	LDA <RunningAllTests
 	BNE TEST_AllNops_Evaluate_Mem_Skip 		; Skip drawing to the screen if this is running for the all-test-menu.
-	LDA #0
-	STA <dontSetPointer						; make sure the PrintTextCentered uses 2 bytes to the value of the v register.
-	JSR WaitForVBlank						; Wait for VBlank so we're not updating the nametable out of VBlank.
+	JSR SetPointerAndWaitForVBlank
 	JSR PrintTextCentered 					; And write the following message to address $2370.
 	.word $2370
 	.byte "NOP wrote to RAM.", $FF
@@ -14066,9 +14399,7 @@ TEST_AllNops_Evaluate_Mem_Skip:
 TEST_AllNops_Evaluate_A: 					; If this is executed, NOP updated the A register.
 	LDA <RunningAllTests
 	BNE TEST_AllNops_Evaluate_A_Skip 		; Skip drawing to the screen if this is running for the all-test-menu.
-	LDA #0
-	STA <dontSetPointer						; make sure the PrintTextCentered uses 2 bytes to the value of the v register.
-	JSR WaitForVBlank						; Wait for VBlank so we're not updating the nametable out of VBlank.
+	JSR SetPointerAndWaitForVBlank
 	JSR PrintTextCentered 					; And write the following message to address $2370.
 	.word $2370
 	.byte "NOP updated A.", $FF
@@ -14080,9 +14411,7 @@ TEST_AllNops_Evaluate_A_Skip:
 TEST_AllNops_Evaluate_X: 					; If this is executed, NOP updated the X register.
 	LDA <RunningAllTests
 	BNE TEST_AllNops_Evaluate_X_Skip 		; Skip drawing to the screen if this is running for the all-test-menu.
-	LDA #0
-	STA <dontSetPointer						; make sure the PrintTextCentered uses 2 bytes to the value of the v register.
-	JSR WaitForVBlank						; Wait for VBlank so we're not updating the nametable out of VBlank.
+	JSR SetPointerAndWaitForVBlank
 	CPX #$3F
 	BEQ TEST_AllNops_Evaluate_WrongOperands ; If X == FF, this instruction had the wrong number of operands.
 	CPX #$3E
@@ -14106,9 +14435,7 @@ TEST_AllNops_Evaluate_WrongOperands: 		; If this is executed, NOP had the wrong 
 TEST_AllNops_Evaluate_Y: 					; If this is executed, NOP updated the Y register.
 	LDA <RunningAllTests
 	BNE TEST_AllNops_Evaluate_Y_Skip 		; Skip drawing to the screen if this is running for the all-test-menu.
-	LDA #0
-	STA <dontSetPointer						; make sure the PrintTextCentered uses 2 bytes to the value of the v register.
-	JSR WaitForVBlank						; Wait for VBlank so we're not updating the nametable out of VBlank.
+	JSR SetPointerAndWaitForVBlank
 	CPY #$41
 	BEQ TEST_AllNops_Evaluate_WrongOperands	; If Y == 1, this instruction had the wrong number of operands.
 	CPY #$42
@@ -14123,9 +14450,7 @@ TEST_AllNops_Evaluate_Y_Skip:
 
 TEST_AllNops_Evaluate_SP: 					; If this is executed, NOP updated the Stack Pointer.
 	LDA <RunningAllTests
-	BNE TEST_AllNops_Evaluate_SP_Skip 		; Skip drawing to the screen if this is running for the all-test-menu.
-	LDA #0
-	STA <dontSetPointer						; make sure the PrintTextCentered uses 2 bytes to the value of the v register.
+	JSR SetPointerAndWaitForVBlank
 	JSR WaitForVBlank						; Wait for VBlank so we're not updating the nametable out of VBlank.
 	JSR PrintTextCentered 					; And write the following message to address $2370.
 	.word $2370
@@ -14141,9 +14466,7 @@ TEST_AllNops_Evaluate_SP_Skip:
 
 TEST_AllNops_Evaluate_Dummy: 				; If this is executed, NOP did not dummy read $2002.
 	LDA <RunningAllTests
-	BNE TEST_AllNops_Evaluate_Dum_Skip 		; Skip drawing to the screen if this is running for the all-test-menu.
-	LDA #0
-	STA <dontSetPointer						; make sure the PrintTextCentered uses 2 bytes to the value of the v register.
+	JSR SetPointerAndWaitForVBlank
 	JSR WaitForVBlank						; Wait for VBlank so we're not updating the nametable out of VBlank.
 	JSR PrintTextCentered 					; And write the following message to address $2370.
 	.word $2370
@@ -14172,8 +14495,22 @@ TEST_AllNops_StoreFlags:
 TEST_AllNops_Evaluate_Fail
 	PLA
 	PLA
+	PLA
+	PLA
 	JMP TEST_Fail	
 ;;;;;;;;;;;;;;;;;
+
+TEST_AllNops_StoreFlagsAndEvaluate:
+	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
+	JSR TEST_AllNops_Evaluate
+	RTS
+;;;;;;;
+
+TEST_AllNops_StoreFlagsAndAbsEvaluate:
+	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
+	JSR TEST_AllNops_EvaluateAbsolute
+	RTS
+;;;;;;;
 
 TEST_AllNOPs:
 	; run some thorough tests on all unofficial NOP instructions.
@@ -14209,8 +14546,7 @@ TEST_AllNOPs:
 	LDA #$40
 	.byte $04, $CA ; NOP <$CA
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test 2 [All NOP Instructions]: opcode $0C ;;;
 	JSR WaitForVBlank	; This test checks if NOP $2002 will update the PPU VBlank Flag.
@@ -14219,16 +14555,14 @@ TEST_AllNOPs:
 	.byte $0C, $EA, $3A ; NOP $3ACA (A mirror of $2002)
 	.byte $0C, $EA, $1A ; NOP $1ACA (A mirror of $02CA)
 	.byte $0C, $CA, $CA ; NOP $CACA (This is to verify the correct number of operands. $CA is the DEX instruction.)
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_EvaluateAbsolute
+	JSR TEST_AllNops_StoreFlagsAndAbsEvaluate
 	
 	;;; Test 3 [All NOP Instructions]: opcode $14 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $14, $CA ; NOP <$CA, X
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test 4 [All NOP Instructions]: opcode $1A ;;;
 	LDY #$42
@@ -14236,8 +14570,7 @@ TEST_AllNOPs:
 	.byte $1A ; NOP (implied)
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test 5 [All NOP Instructions]: opcode $1C ;;;
 	JSR WaitForVBlank	; This test checks if NOP $2002 will update the PPU VBlank Flag.
@@ -14246,16 +14579,14 @@ TEST_AllNOPs:
 	.byte $1C, $EA, $3A ; NOP $3ACA, X (A mirror of $2002)
 	.byte $1C, $EA, $1A ; NOP $1ACA, X (A mirror of $02CA)
 	.byte $1C, $CA, $CA ; NOP $CACA, X (This is to verify the correct number of operands. $CA is the DEX instruction.)
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_EvaluateAbsolute
+	JSR TEST_AllNops_StoreFlagsAndAbsEvaluate
 	
 	;;; Test 6 [All NOP Instructions]: opcode $34 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $34, $CA ; NOP <$CA, X
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test 7 [All NOP Instructions]: opcode $3A ;;;
 	LDY #$42
@@ -14263,8 +14594,7 @@ TEST_AllNOPs:
 	.byte $3A ; NOP (implied)
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test 8 [All NOP Instructions]: opcode $3C ;;;
 	JSR WaitForVBlank	; This test checks if NOP $2002 will update the PPU VBlank Flag.
@@ -14273,24 +14603,21 @@ TEST_AllNOPs:
 	.byte $3C, $EA, $3A ; NOP $3ACA, X (A mirror of $2002)
 	.byte $3C, $EA, $1A ; NOP $1ACA, X (A mirror of $02CA)
 	.byte $3C, $CA, $CA ; NOP $CACA, X (This is to verify the correct number of operands. $CA is the DEX instruction.)
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_EvaluateAbsolute
+	JSR TEST_AllNops_StoreFlagsAndAbsEvaluate
 	
 	;;; Test 9 [All NOP Instructions]: opcode $44 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $44, $CA ; NOP <$CA
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 
 	;;; Test A [All NOP Instructions]: opcode $54 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $54, $CA ; NOP <$CA, X
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test B [All NOP Instructions]: opcode $5A ;;;
 	LDY #$42
@@ -14299,7 +14626,7 @@ TEST_AllNOPs:
 	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate+3
 	
 	;;; Test C [All NOP Instructions]: opcode $5C ;;;
 	JSR WaitForVBlank	; This test checks if NOP $2002 will update the PPU VBlank Flag.
@@ -14308,24 +14635,21 @@ TEST_AllNOPs:
 	.byte $5C, $EA, $3A ; NOP $3ACA, X (A mirror of $2002)
 	.byte $5C, $EA, $1A ; NOP $1ACA, X (A mirror of $02CA)
 	.byte $5C, $CA, $CA ; NOP $CACA, X (This is to verify the correct number of operands. $CA is the DEX instruction.)
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_EvaluateAbsolute
+	JSR TEST_AllNops_StoreFlagsAndAbsEvaluate
 	
 	;;; Test D [All NOP Instructions]: opcode $64 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $64, $CA ; NOP <$CA
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test E [All NOP Instructions]: opcode $74 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $74, $CA ; NOP <$CA, X
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test F [All NOP Instructions]: opcode $7A ;;;
 	LDY #$42
@@ -14333,8 +14657,7 @@ TEST_AllNOPs:
 	.byte $7A ; NOP (implied)
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test G [All NOP Instructions]: opcode $7C ;;;
 	JSR WaitForVBlank	; This test checks if NOP $2002 will update the PPU VBlank Flag.
@@ -14343,48 +14666,42 @@ TEST_AllNOPs:
 	.byte $7C, $EA, $3A ; NOP $3ACA, X (A mirror of $2002)
 	.byte $7C, $EA, $1A ; NOP $1ACA, X (A mirror of $02CA)
 	.byte $7C, $CA, $CA ; NOP $CACA, X (This is to verify the correct number of operands. $CA is the DEX instruction.)
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_EvaluateAbsolute
+	JSR TEST_AllNops_StoreFlagsAndAbsEvaluate
 	
 	;;; Test H [All NOP Instructions]: opcode $80 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $80, $CA ; NOP #CA
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test I [All NOP Instructions]: opcode $82 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $82, $CA ; NOP #CA
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test J [All NOP Instructions]: opcode $89 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $89, $CA ; NOP #CA
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test K [All NOP Instructions]: opcode $C2 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $C2, $CA ; NOP #CA
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test L [All NOP Instructions]: opcode $D4 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $D4, $CA ; NOP <$CA, X
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test M [All NOP Instructions]: opcode $DA ;;;
 	LDY #$42
@@ -14392,8 +14709,7 @@ TEST_AllNOPs:
 	.byte $DA ; NOP (implied)
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test N [All NOP Instructions]: opcode $DC ;;;
 	JSR WaitForVBlank	; This test checks if NOP $2002 will update the PPU VBlank Flag.
@@ -14402,16 +14718,14 @@ TEST_AllNOPs:
 	.byte $DC, $EA, $3A ; NOP $3ACA, X (A mirror of $2002)
 	.byte $DC, $EA, $1A ; NOP $1ACA, X (A mirror of $02CA)
 	.byte $DC, $CA, $CA ; NOP $CACA, X (This is to verify the correct number of operands. $CA is the DEX instruction.)
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_EvaluateAbsolute
+	JSR TEST_AllNops_StoreFlagsAndAbsEvaluate
 	
 	;;; Test O [All NOP Instructions]: opcode $E2 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $E2, $CA ; NOP #CA
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test P [All NOP Instructions]: opcode $EA ;;;
 	LDY #$42
@@ -14419,16 +14733,14 @@ TEST_AllNOPs:
 	.byte $EA ; NOP (implied)
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test Q [All NOP Instructions]: opcode $F4 ;;;
 	LDY #$41
 	LDA #$40
 	.byte $F4, $CA ; NOP <$CA, X
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test R [All NOP Instructions]: opcode $FA ;;;
 	LDY #$42
@@ -14436,8 +14748,7 @@ TEST_AllNOPs:
 	.byte $FA ; NOP (implied)
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
 	DEY	; With the wrong number of operands, X is decremented, and Y will be non-zero.
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_Evaluate
+	JSR TEST_AllNops_StoreFlagsAndEvaluate
 	
 	;;; Test S [All NOP Instructions]: opcode $FC ;;;
 	JSR WaitForVBlank	; This test checks if NOP $2002 will update the PPU VBlank Flag.
@@ -14446,8 +14757,7 @@ TEST_AllNOPs:
 	.byte $FC, $EA, $3A ; NOP $3ACA, X (A mirror of $2002)
 	.byte $FC, $EA, $1A ; NOP $1ACA, X (A mirror of $02CA)
 	.byte $FC, $CA, $CA ; NOP $CACA, X (This is to verify the correct number of operands. $CA is the DEX instruction.)
-	JSR TEST_AllNops_StoreFlags ; Store flags to be read during evaluation.
-	JSR TEST_AllNops_EvaluateAbsolute
+	JSR TEST_AllNops_StoreFlagsAndAbsEvaluate
 	
 	;; END OF TEST ;;
 	LDA #1
@@ -14615,15 +14925,43 @@ TEST_PaletteRAMQuirksCont:
 	LDA $2007 ; The upper 2 bits read from palette RAM are copies of the PPU bus.
 	CMP #$FF
 	BNE FAIL_PaletteRAMQuirks2
+	INC <ErrorCode
+
+	;;; Test 6 [Palette RAM Quirks]: Reading from Palette RAM with greyscale mode enabled always reads the lower four bits as zero ;;;
 	
+	JSR SetPPUADDRFromWord
+	.byte $3F, $1C
+	LDA #$5A
+	STA $2007 ; write $5A to palette RAM
+	JSR SetPPUADDRFromWord
+	.byte $3F, $1C
+	LDA #1
+	STA $2001 ; Enable greyscale
+	LDA $2007 ; Read $10 from palette ram! (notably, not $5A, which is the value we wrote. Not even $1A. Rather, the lower four bits are all zero.)
+	CMP #$10
+	BNE FAIL_PaletteRAMQuirks2
+	INC <ErrorCode
+
+	;;; Test 7 [Palette RAM Quirks]: Writing to Palette RAM with greyscale mode enabled does not affect the lower four bits ;;;
+	LDA #$16
+	STA $2007
+	JSR DisableRendering ; clears $2001, bit 0
+	JSR SetPPUADDRFromWord
+	.byte $3F, $1D
+	LDA $2007
+	CMP #$16
+	BNE FAIL_PaletteRAMQuirks3
+
 	;; END OF TEST ;;
-	JSR WaitForVBlank
 	JSR SetUpDefaultPalette
 	JSR ResetScroll
 	JSR EnableRendering
 	LDA #1
 	RTS
 ;;;;;;;
+
+FAIL_PaletteRAMQuirks3:
+	JMP FAIL_PaletteRAMQuirks
 
 FAIL_INC4014:
 	JMP TEST_Fail
@@ -14739,7 +15077,6 @@ TEST_AttributesAsTiles_loop:
 	STA $2007	; Write $24 to the following $40 bytes. (everything from $2FC0 to $2FFF)
 	DEX
 	BNE TEST_AttributesAsTiles_loop
-	JSR ClearPage2	; Clear OAM.
 
 	JSR SetPPUADDRFromWord ; move the v register to $2FC8
 	.byte $2F, $C8
@@ -14788,7 +15125,6 @@ TEST_tRegisterQuirks:
 	;;; Test 1 [t Register Quirks]: Verify the scroll is working when writing to $2006 first. ;;;
 	JSR DisableRendering
 	JSR ClearNametable2_With24 ; Nametable 2 is polluted from other tests. Since it gets drawn during this test, let's clear it first.
-	JSR ClearPage2
 	JSR PrintCHR
 	.word $2D84
 	.byte $C0, $FF ; Draw a single pixel on the second nametable.
@@ -14927,7 +15263,6 @@ TEST_StaleBGShiftRegisters:
 	JSR PrintCHR
 	.word $2000
 	.byte $C7, $FF
-	JSR ClearPage2
 	JSR SetUpSpriteZero
 	.byte $05, $C0, $00, $00 
 	JSR SetPPUADDRFromWord
@@ -15095,6 +15430,16 @@ TEST_Scanline0Sprites_ClearPg2: ; clear page 2 (used for OAM DMA) with all zeroe
 
 	JSR SetUpSpriteZero ; And set up sprite zero in this way.
 	.byte $00, $C6, $00, $80
+	; CHR $C6 is a single pixel on row 5:
+	;
+	; . . . . . . . .
+	; . . . . . . . .
+	; . . . . . . . .
+	; . . . . . . . .
+	; . . . . . . . .
+	; # . . . . . . .
+	; . . . . . . . .
+	; . . . . . . . .
 
 	JSR PrintCHR
 	.word $2000
@@ -15107,9 +15452,9 @@ TEST_Scanline0Sprites_ClearPg2: ; clear page 2 (used for OAM DMA) with all zeroe
 		
 	JSR WaitForVBlank ; Wait for vblank
 	JSR EnableRendering
-	JSR WaitForVBlank ; Wait for a second vblank, so we can check for sprite zero hits in the previous frame.
-	LDA $2002 ; read PPUSTATUS
-	AND #$40 ; check for sprite zero hit.
+	LDA #2
+	STA $4014
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE FAIL_Scanline0Sprites1 ; If the sprite zero hit *DID* occur, the test has failed, since a Y coordinate of 0 should draw the sprite on scanline 1.
 	INC <ErrorCode
 	
@@ -15118,7 +15463,7 @@ TEST_Scanline0Sprites_ClearPg2: ; clear page 2 (used for OAM DMA) with all zeroe
 	; See https://forums.nesdev.org/viewtopic.php?t=26291
 	
 	; In summary, OAM data can be drawn on scanline 0, since the pre-render line is treated as scanline 5 for the in-range checks occuring during dots 256 to 319
-	; (evaluated as line (261 & 255) = scanline 5)
+	; (evaluated as line (261 & 255) = scanline 5. That's also why CHR $C6 (the character used for sprite zero during this test) has a single pixel on row 5.)
 	; This results in the existing data in secondary OAM being put into the sprite shifters on the pre-render line. (only if the sprite is "in-range" of scanline 5.)
 	; The data in secondary OAM would either exist due to the previous frame's scanline 239, or whatever was in secondary OAM before rendering was disabled. (F-Blank)
 
@@ -15128,6 +15473,8 @@ TEST_Scanline0Sprites_ClearPg2: ; clear page 2 (used for OAM DMA) with all zeroe
 	STA $701
 	LDA #HIGH(RunScanline0Sprite_NMI)
 	STA $702
+
+	; This subroutine will basically verify that a sprite zero hit is occuring on scanline 0.
 
 	JSR RunScanline0SpriteTest ; The test occurs in this subroutine. I use a subroutine so I can change very few things and run the same code again.
 	
@@ -15146,9 +15493,13 @@ TEST_Scanline0Sprites_ClearPg2: ; clear page 2 (used for OAM DMA) with all zeroe
 	JSR Clockslide_29780
 
 	; The pre-render line skips the last dot, resulting in an interesting side effect.
-	; The background jitters, and the first pixel of the sprite shift registers gets drawn at x=0 instead of the intended x position. 
+	; The first pixel of the sprite shift registers gets drawn at x=0 instead of the intended x position. 
 	; The 7 remaining pixels are drawn as normal, but shifted left by 1 pixel.
-	; In other words, we're going to test for sprite zero hits at X=0 now.
+	;
+	; Basically, this will cause an alternating pattern, where on one frame the sprite on scnaline 0 will be shifted at x=0, and on the next frame it will not.
+	; I'm going to verify this behavior by checking if the sprite zero hit alternates each frame.
+	;
+	; Let's run this test again for sprite zero hits at X=0 now.
 
 	JSR RunScanline0SpriteTest ; The test occurs in this subroutine again. (The nametable was modified.)
 
@@ -15175,27 +15526,27 @@ TEST_Scanline0Sprites_ClearPg2: ; clear page 2 (used for OAM DMA) with all zeroe
 	EOR $501 ; Did any of these fail?
 	BEQ Scanline0Sprites_RGB
 	; non-RGB detected. Check the second set of tests.
-	;;; Test 3 (Composite) [Sprites On Scanline 0]: On a composite PPU, you should also have a sprite zero hit at x=0 ;;;	
+	;;; Test 3 (Composite) [Sprites On Scanline 0]: On a composite PPU, alternating frames should draw a single pixel of sprite zero at X=0 instead of the expected X position of the object ;;;	
 	
 	LDA $502
 	ORA $503
 	BEQ FAIL_Scanline0Sprites ; if neither test passed, that's a fail!
-	INC <ErrorCode
 	; And verify that only 1 from this set passed.
-	;;; Test 4 (Composite) [Sprites On Scanline 0]: You should have only 1 sprite zero hit at x=0 ;;;	
-	
-	LDA $502
-	EOR $503 ; Did any of these fail?
-	BEQ FAIL_Scanline0Sprites
+
 	; Final confirmation. The results MUST either be 40 00 00 40, or 00 40 40 00
-	LDA $500
-	EOR $502
+	; If you are failing this test, use the debug menu or a custom RAM watch to see what values you have.
+	
+	LDA $502 ; Address $502
+	EOR $503 ; Does NOT match address $503
 	BEQ FAIL_Scanline0Sprites
-	LDA $500
-	CMP $503
+	LDA $500 ; Address $500
+	EOR $502 ; does NOT match address $502
+	BEQ FAIL_Scanline0Sprites
+	LDA $500 ; Address $500
+	CMP $503 ; DOES match address $503
 	BNE FAIL_Scanline0Sprites
-	LDA $501
-	CMP $502
+	LDA $501 ; Address $501
+	CMP $502 ; DOES match address $502
 	BNE FAIL_Scanline0Sprites
 	
 	; GG, that's a verified composite PPU
@@ -15277,7 +15628,6 @@ TEST_RenderingFlagBehavior:
 	; We repeat this experiment, but we only disable rendering the background, keeping sprites active. This time, the sprite zero hit will occur!
 
 	JSR DisableRendering
-	JSR ClearPage2
 	JSR PrintCHR
 	.word $200F
 	.byte $FE, $FE, $FF ; two solid white boxes at X= $78
@@ -15345,6 +15695,184 @@ TEST_RenderingFlagBehaviorCleanUp:
 	.byte $24, $24, $FF ; two solid white boxes at X= $78
 	RTS
 ;;;;;;;
+
+FAIL_InternalDataBus:
+	JMP TEST_Fail
+
+
+TEST_InternalDataBus:
+	;;; Test 1 [Internal Data Bus]: Verify Open Bus. ;;;
+	LDX #$10
+	LDA $41F8, X
+	CMP #$41
+	BNE FAIL_InternalDataBus
+	
+	; A copy/paste of DMA + Open Bus.
+	
+	JSR DMASync_50CyclesRemaining	; sync DMA
+	JSR Clockslide_47
+	LDA $4000 ; <------- [Opcode] [Operand1] [Operand2] [*DMA*] [Read]
+	BNE FAIL_InternalDataBus
+	
+	INC <ErrorCode
+	
+	;;; Test 2 [Internal Data Bus]: Verify that the External Data Bus can not change the Internal Data Bus. ;;;
+	; This test will trigger a DMC DMA during a read from $4015. More specifically, we'll be reading index $15 of the DPCM Sample as well!
+	; This sample will have bit 5 set.
+	; This does NOT set bit 5 of the $4015 read, as that is set exclusively by the Internal Data Bus.
+	
+	; The internal data bus is updated during every read/write, while the external data bus is updated on every read/write EXCEPT for *reads* from address $4015.
+	
+	JSR TEST_InternalDataBus_Sync ; Sync the DMC DMA to be between the operands and the read from memory, using index $15 of the sample.
+	NOP
+	NOP
+	NOP
+	NOP
+	LDA $4015 ; [Opcode] [Operand] [Operand] {DMC DMA} [Read from $4015]
+	AND #$20  ;                              This DMC DMA does not update the external data bus. Only the internal one.
+	BNE FAIL_InternalDataBus
+	
+	INC <ErrorCode
+	
+	;;; Test 3 [Internal Data Bus]: Verify that the Internal Data Bus can not change the External Data Bus. ;;;
+	
+	JSR TEST_InternalDataBus_Sync ; Sync the DMC DMA to be between the operands and the read from memory, using index $15 of the sample.
+	LDX #$16
+	LDA $00FF, X
+	LDA $40FF, X ; [Opcode] [Operand] [Operand] [Read from $4015] {DMC DMA} [Read from Open Bus]
+	AND #$20     ;                                                This DMC DMA does not update the external data bus. Only the internal one.
+	BEQ FAIL_InternalDataBus
+	
+	;; END OF TEST ;;	
+	
+	LDA #1
+	RTS
+;;;;;;;
+
+
+
+TEST_InternalDataBus_Sync:
+	JSR DMASync_50CyclesRemaining
+	LDA #2		;+2
+	STA $4013	;+4 sample length = #2 * 16 + 1 = 33 (or $21 in hex)
+	LDA #$BB	;+2
+	STA $4012	;+4 Sample address is $EEC0 ($21 copies of $60. I just needed something with bit 5 set.)
+	LDA #$4F	;+2
+	STA $4010	;+4 fastest rate. (also loop, so it refreshes the address and length)
+	LDX #$0	;+2
+	
+	; 30 CPU cycles left.
+	JSR Clockslide_30
+	; DMA that reloads all the stuff.
+	; Next DMA in 428 cycles
+	LDA #$00
+	STA $4017	; Keep the interrupt flag set, but refresh the timer.
+	JSR ClockslideFromWord
+	.word 404
+	
+	LDX #$15
+TEST_InternalDataBus_Loop:
+	; Next DMA in 8 cycles
+	NOP
+	NOP
+	NOP
+	NOP
+	NOP
+	JSR ClockslideFromWord
+	.word 413
+	DEX
+	BNE TEST_InternalDataBus_Loop
+	    ; DMA in 9 cycles.
+	RTS ; -6. So the DMA is now in 3 cycles.
+;;;;;;;;
+
+FAIL_BGSerialIn:
+	JSR WaitForVBlank
+	JSR SetUpDefaultPalette
+	JMP TEST_Fail
+;;;;;;;;;;;;;;;;;
+
+TEST_BGSerialIn:
+	;;; Test 1 [BG Serial In]: Pre-test, verify sprite zero hits. ;;;
+	; To be honest, this is an insane test that makes a sprite zero hit occur when the nametable is entirely translucent pixels.
+	; We just need to confirm that the sprite zero hit doesn't happen :)
+	JSR DisableRendering       ; Disable rendering so the following can happen even out of vblank.
+	JSR ClearNametable2_With24 ; Clear nametable 2 with tile $24 (empty tiles)
+	JSR SetUpSpriteZero        ; Prepare sprite zero with the following values:
+	.byte $00, $C0, $03, $92   ; Single dot on scanline 1, X = 92
+	JSR PrintCHR               ; Update the color palette so the visual artifacts of this test are visible.
+	.word $3F0D                ; Starting with index 01 of palette 3:
+	.byte $0F, $30, $26, $FF   ; Black, White, Red. (terminator byte)
+	JSR SetPPUADDRFromWord     ; Move t register to $2C00
+	.byte $2C, $00             ; 
+	JSR EnableRendering        ; Enable rendering.
+	JSR WaitForVBlank          ; Wait for vblank. The prep work is now complete.
+	
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
+	BNE FAIL_BGSerialIn        ; If a sprite zero hit did somehow occur, fail the test.
+	INC <ErrorCode             ; And increment the error code to 2.
+	
+	;;; Test 2 [BG Serial In]: Can we make a sprite zero hit occur on an empty nametable by preventing the BG shift registers from loading pattern data? ;;;
+	; The background shift registers are loaded with pattern data every 8 ppu cycles. (from the range of dots 0 to 255, and dots 320 to 335)
+	; If you were to disable rendering just before the data would be loaded, and re-enable rendering just after the data would have been loaded, you could draw the Serial Input values for the shift registers.
+	; Let's have a quick crash course on the timing of this all, and what the shift registers are doing. (https://www.nesdev.org/wiki/PPU_signals)
+	; On dots 0 through 255, (and dots 320 through 335) the PPU:
+	; reads from the nametable       (dot % 8 == 0 and 1), 
+	; reads from the attribute table (dot % 8 == 2 and 3), 
+	; reads from the pattern table   (dot % 8 == 4 and 5), 
+	; reads from the pattern table   (dot % 8 == 6 and 7). 
+	;
+	; So what are the background shift registers doing during this time?
+	; The background shift registers are shifted on all of these cycles.
+	; So for instance, using the example [00110011 00110011]...
+	; would be shifted left to the value [01100110 01100110].
+	; The lowest bit (the new value shifted in on the right) is a 0 for the low bit plane, and a 1 for the high bit plane.
+	; So if this was the high bit plane, using the example [00110011 00110011]...
+	; instead the value would be shifted left to the value [01100110 01100111].
+	
+	; Since the data read from the pattern tables is loaded into the shift registers on (dot % 8 == 7),
+	; If we disable rendering on (dot % 8 == 6) and re-enable rendering on (dot % 8 == 0), then we can draw a large amount of these '1' bits that keep getting shifted in.
+	;
+	; Keep in mind, writes to $2001 don't happen immediately when the CPU writes there, and has a delay of 2 to 5 ppu cycles, depending on the ppu and the clock alignments.
+	; This just means that it's really tedious to test for this, since (depending on the ppu or the alignment) the writes to disable/enable rendering could happen in most of the range form dots 0 to 7.
+
+	JSR Sync_ToPreRenderDot324 ; It's actually syncing to (scanline 0, dot 1) - 18 ppu cycles.
+	JSR Clockslide_100         ; I'm going to stall until a specific ppu cycle.
+	JSR Clockslide_49          ; Somewhere, middle of the screen-ish, after a few scanlines.
+	LDY #120                   ; Y only ticks down in 2/3rds of the iterations in the upcoming loop. This will run 180 times.
+	LDX #3                     ; Since there are 113.666 cpu cycles per scanline, I run 114, 114, then 113 in a repeating pattern. This keeps the action relatively in the same place each scanline.
+TEST_BGSerialIn_Loop:
+	LDA #$0   ; (counting ppu cycles % 8)                        ; +2
+	STA $3E01 ; disable rendering (4-5-6)                        ; +4 = 6   ; Additional comment: Writing to a mirror of $2001. This prevents a hardware issue where the wrong value is written to the ppu register for a single ppu cycle.
+	LDA #$1E  ; (7-0-1) (2-3-4)                                  ; +2 = 8
+	STA $2001 ; (5-6-7) (0-1-2) (3-4-5) (6-7-0) enable rendering ; +4 = 12  ; Additional comment: The write to $2001 happens on ppu dot%8 == 6, but adding the smallest known delay of 2 brings us to dot%8 == 0.
+	JSR Clockslide_50                                            ; +50 = 62 ; Additional comment: The rest of this incredibly sloppy loop here is just counting cycles to make this happen in approximately the same place next scanline.
+	JSR Clockslide_37                                            ; +37 = 99
+	DEX                                                          ; +2 = 101
+	BNE TEST_BGSerialIn_WasteACycle                              ; +2 or 3 = 103 or 104
+	LDX #3                                                       ; +2 = 105
+	NOP                                                          ; +2 = 107
+	LDA <$00                                                     ; +3 = 110
+	JMP TEST_BGSerialIn_Loop                                     ; +3 = 113
+TEST_BGSerialIn_WasteACycle:
+	DEY                                                          ; +2 = 106
+	BEQ TEST_BGSerialIn_Exit ; Exit the loop if Y = 0.           ; +2 = 108
+	LDA <$00                                                     ; +3 = 111
+	JMP TEST_BGSerialIn_Loop                                     ; +3 = 114
+TEST_BGSerialIn_Exit:
+	LDA $2002                ; Anyway, I could've just done that once instead of across the entire screen, but it was suggested to make it more visible.
+	AND #$40                 ; Keep in mind, this value should show up as a white line, (color %10 of palette %11) instead of red, color %11 of palette %11.
+	BEQ FAIL_BGSerialIn2     ; So we check if a sprite zero hit occured, masked away everything but the sprite zero hit flag, and fail the test if no hit occured.
+	;; END OF TEST ;;
+
+	JSR WaitForVBlank        ; Wait for vblank...
+	JSR SetUpDefaultPalette  ; Fix the color palette.
+	LDA #1                   ; Return 1 to indicate a pass.
+	RTS
+;;;;;;;
+FAIL_BGSerialIn2:
+	JMP FAIL_BGSerialIn
+;;;;;;;;;;;;;;;;;
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;                ENGINE                   ;;
@@ -15488,6 +16016,7 @@ SetPPUSCROLLFromWord:	; pretty much the same as SetPPUADDRFromWord, but it write
 	.org $EEC0	
 DPCM_Sample_60:
 	.byte $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60
+	.byte $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60, $60
 	.byte $60
 	
 SetUpSpriteZero:
@@ -15518,7 +16047,7 @@ DMASync40_Loop:
 	LDA $5000 ; Open bus! Either we will read $40 from the high byte, or $00 from the DMA.
 	;	[Read AD] [Read 00] [Read 40] [DMA PUT (1)] [DMA GET (2)] [DMA PUT (3)] [DMA GET (4)] [Read open bus (5)]
 	CMP #$40
-	BNE DMASync40_Loop ; If the DMA occurs, BIT $5000 will read $40 (Setting overflow flag) ; +2 (7)
+	BNE DMASync40_Loop ; If the DMA occurs, LDA $5000 will read $40 (Setting zero flag) ; +2 (7)
 	JSR DMASyncWithXX_End ; Set the sample to non-looping, restore A, and clockslide a bit.
 	RTS 
 ;;;;;;;
@@ -15533,7 +16062,7 @@ DMASync48_Loop:
 	LDA $4000 ; Open bus! Either we will read $40 from the high byte, or $48 from the DMA.
 	;	[Read AD] [Read 00] [Read 40] [DMA PUT (1)] [DMA GET (2)] [DMA PUT (3)] [DMA GET (4)] [Read open bus (5)]
 	CMP #$48
-	BNE DMASync48_Loop ; If the DMA occurs, BIT $5000 will read $40 (Setting overflow flag) ; +2 (7)
+	BNE DMASync48_Loop ; If the DMA occurs, LDA $4000 will read $48 (Setting zero flag) ; +2 (7)
 	JSR DMASyncWithXX_End ; Set the sample to non-looping, restore A, and clockslide a bit.
 	RTS
 ;;;;;;;
@@ -15548,7 +16077,7 @@ DMASync60_Loop:
 	LDA $4000 ; Open bus! Either we will read $40 from the high byte, or $60 from the DMA.
 	;	[Read AD] [Read 00] [Read 40] [DMA PUT (1)] [DMA GET (2)] [DMA PUT (3)] [DMA GET (4)] [Read open bus (5)]
 	CMP #$60
-	BNE DMASync60_Loop ; If the DMA occurs, BIT $5000 will read $40 (Setting overflow flag) ; +2 (7)
+	BNE DMASync60_Loop ; If the DMA occurs, LDA $4000 will read $60 (Setting zero flag) ; +2 (7)
 	JSR DMASyncWithXX_End ; Set the sample to non-looping, restore A, and clockslide a bit.
 	RTS
 ;;;;;;;
@@ -15563,7 +16092,7 @@ DMASyncA5_Loop:
 	LDA $4000 ; Open bus! Either we will read $40 from the high byte, or $A5 from the DMA.
 	;	[Read AD] [Read 00] [Read 40] [DMA PUT (1)] [DMA GET (2)] [DMA PUT (3)] [DMA GET (4)] [Read open bus (5)]
 	CMP #$A5
-	BNE DMASyncA5_Loop ; If the DMA occurs, BIT $5000 will read $40 (Setting overflow flag) ; +2 (7)
+	BNE DMASyncA5_Loop ; If the DMA occurs, LDA $4000 will read $A5 (Setting zero flag) ; +2 (7)
 	JSR DMASyncWithXX_End ; Set the sample to non-looping, restore A, and clockslide a bit.
 	RTS
 ;;;;;;;
@@ -15578,7 +16107,7 @@ DMASync68_Loop:
 	LDA $4000 ; Open bus! Either we will read $40 from the high byte, or $68 from the DMA.
 	;	[Read AD] [Read 00] [Read 40] [DMA PUT (1)] [DMA GET (2)] [DMA PUT (3)] [DMA GET (4)] [Read open bus (5)]
 	CMP #$68
-	BNE DMASync68_Loop ; If the DMA occurs, BIT $5000 will read $40 (Setting overflow flag) ; +2 (7)
+	BNE DMASync68_Loop ; If the DMA occurs, LDA $4000 will read $68 (Setting zero flag) ; +2 (7)
 	JSR DMASyncWithXX_End ; Set the sample to non-looping, restore A, and clockslide a bit.
 	RTS
 ;;;;;;;
@@ -15593,7 +16122,7 @@ DMASync90_Loop:
 	LDA $4000 ; Open bus! Either we will read $40 from the high byte, or $90 from the DMA.
 	;	[Read AD] [Read 00] [Read 40] [DMA PUT (1)] [DMA GET (2)] [DMA PUT (3)] [DMA GET (4)] [Read open bus (5)]
 	CMP #$90
-	BNE DMASync90_Loop ; If the DMA occurs, BIT $5000 will read $40 (Setting overflow flag) ; +2 (7)
+	BNE DMASync90_Loop ; If the DMA occurs, LDA $4000 will read $90 (Setting zero flag) ; +2 (7)
 	JSR DMASyncWithXX_End ; Set the sample to non-looping, restore A, and clockslide a bit.
 	RTS
 ;;;;;;;
@@ -15608,7 +16137,7 @@ DMASync05_Loop:
 	LDA $4000 ; Open bus! Either we will read $40 from the high byte, or $05 from the DMA.
 	;	[Read AD] [Read 00] [Read 40] [DMA PUT (1)] [DMA GET (2)] [DMA PUT (3)] [DMA GET (4)] [Read open bus (5)]
 	CMP #$05
-	BNE DMASync05_Loop ; If the DMA occurs, BIT $5000 will read $40 (Setting overflow flag) ; +2 (7)
+	BNE DMASync05_Loop ; If the DMA occurs, LDA $4000 will read $05 (Setting zero flag) ; +2 (7)
 	JSR DMASyncWithXX_End ; Set the sample to non-looping, restore A, and clockslide a bit.
 	RTS
 ;;;;;;;
@@ -15713,8 +16242,12 @@ DisableNMI:; Disables the NMI. Does not affect the other PPUCRTL flags.
 	RTS
 ;;;;;;;
 
+ResetScroll_2C00:; sets the PPU "v" register to $2C00
+	LDA #$2C
+	.byte $CD ; CMP Absolute to skip the next two byte. This .byte $CD is effectively a 1-byte long "branch two bytes"
 ResetScroll:; sets the PPU "v" register to $2000
 	LDA #$20
+	CMP $2002
 	STA $2006	; Update high byte of v to $20
 	LDA #$00
 	STA $2006   ; Update low byte of v to $00
@@ -16664,7 +17197,7 @@ SetPPUADDRFromWord:	; pretty much the same as ReadPPUADDRFromWord, but it doesn'
 	LDA <$FF
 	RTS
 ;;;;;;;
-WriteToPPUADDRWithByte:	; Sets up v then writes n to it, where n is the third bytes after the JSR
+WriteToPPUADDRWithByte:	; Sets up v then writes n to it, where n is the third byte after the JSR
 	STA <$FF
 	STY <$FE
 	JSR CopyReturnAddressToByte0
@@ -17164,7 +17697,7 @@ RunTest_AllTestSkipNMI:
 	LDA <suitePointerList+1,X     ; read the high byte of where to store the test results.
 	STA <TestResultPointer+1      ; and store it in RAM next to the low byte.
 	
-	LDA <TestResultPointer+1        ; draw tests cannot be marked to be skipped,
+	LDA <TestResultPointer+1      ; draw tests cannot be marked to be skipped,
 	CMP #3                        ; but address $3FF is uninitialized, and might be $FF. 
 	BEQ RunTest_SkipSkip          ; So we make sure we never skip Draw tests.
 	
@@ -17199,6 +17732,7 @@ RunTest_AllTestSkipDraw1:
 	LDA #$80
 	STA <Test_UnOp_SP             ; Some tests might modify the stack pointer. The test will use a value of $80 just to be sure it's not overwriting other stack data.
 	JSR ClearPage5                ; clear RAM from $500 to $5FF. That RAM is dedicated for running tests, so we want it clean.
+	JSR ClearPage2                ; clear page 2 as well.
 	JSR WaitForVBlank             ; this makes debugging your own emulator with this ROM much easier, since the test should always begin at the start of a frame.
 	LDA #0                        ; Initialize A to 0.
 	TAX                           ; Initialize X to 0.
@@ -17560,6 +18094,13 @@ VblSync_Plus_A_End: ; Moved here for space. This is the end of the VblSync_Plus_
 	RTS
 ;;;;;;;
 
+WaitForVBLSpriteZeroHit:
+	JSR WaitForVBlank          ; Wait for vblank
+	LDA $2002                  ; Read PPUSTATUS
+	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	RTS                        ; RTS, and run a BEQ or BNE afterwards.
+;;;;;;;
+
 VerifySpriteZeroHits:
 	                           ; STEP ONE: Intentionally miss a sprite zero hit.
 	JSR DisableRendering       ; Disable rendering so the following can happen even out of vblank.
@@ -17576,18 +18117,14 @@ VerifySpriteZeroHits:
 	STA $4014                  ; Trigger the OAM DMA
 	JSR WaitForVBlank          ; Wait for vblank
 	JSR EnableRendering        ; Draw both the background and sprites.	
-	JSR WaitForVBlank          ; Wait for vblank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit flag.
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	BNE VerifySpriteZeroHits_F ; Fail the test if the sprite zero hit occured.
 	INC $200                   ; Move this sprite to scanline 5.
 	LDA #2                     ; Page 2 for the OAM DMA
 	STA $4014                  ; Trigger the OAM DMA
 	JSR WaitForVBlank          ; Wait for vblank
 	JSR EnableRendering        ; Draw both the background and sprites.	
-	JSR WaitForVBlank          ; Wait for vblank
-	LDA $2002                  ; Read PPUSTATUS
-	AND #$40                   ; Mask away everything except the sprite zero hit 
+	JSR WaitForVBLSpriteZeroHit; Wait for vblank and load A with $2002.6
 	RTS                        ; and return.
 ;;;;;;;
 VerifySpriteZeroHits_F:
@@ -18115,7 +18652,7 @@ DMASync_TheGoodOne:
 	LDA #$FF
 	STA $4012 ; Sample address $FFC0.
 	LDA #0
-	STA $4013 ; #1 * 16 + 1 = 17 byte length.
+	STA $4013 ; #1 * 0 + 1 = 1 byte length. (IT MUST BE A 1-BYTE LONG SAMPLE! Some tests rely on the address counter being reset when the DMA occurs.)
 	LDA #$10
 	STA $4015 ; Start the DMC DMA loop
 	NOP
